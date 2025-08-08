@@ -1,6 +1,6 @@
 # Letta-Telegram Bot
 
-A serverless Telegram bot that connects your Telegram chats to Letta AI agents, enabling intelligent conversations with persistent memory and context awareness.
+A serverless Telegram bot that exposes your Letta agents to Telegram, enabling intelligent conversations with persistent memory and context awareness.
 
 ## 🚀 What This Does
 
@@ -22,7 +22,7 @@ Before you begin, you'll need:
 ### 1. Clone and Install
 
 ```bash
-git clone <your-repo>
+git clone https://github.com/letta-ai/letta-telegram.git
 cd letta-telegram
 pip install -r requirements.txt
 modal setup
@@ -33,11 +33,12 @@ modal setup
 First, create and configure a Letta agent:
 1. Visit [Letta's platform](https://letta.com) and create an agent
 2. Note your API key, agent ID, and API URL
-3. See `cheatsheets/` directory for Letta usage guides
 
 ### 3. Configure Modal Secrets
 
-Create two Modal secrets with your credentials:
+Create two Modal secrets with your credentials.
+
+`TELEGRAM_WEBHOOK_SECRET` is optional and can be left blank. It is a random string that can be used to verify the webhook request, but it is currently not implemented.
 
 ```bash
 # Telegram bot credentials
@@ -111,9 +112,17 @@ This creates temporary endpoints you can use for testing.
 
 ### Available Endpoints
 
-- `POST /telegram_webhook` - Receives Telegram messages
+- `POST /telegram_webhook` - Receives Telegram messages  
 - `GET /health_check` - Service health status
 - `send_proactive_message()` - Function for agent-initiated messages
+
+### Key Features
+
+- **Real-time Streaming**: Messages stream from Letta agents in real-time
+- **Error Handling**: Automatic retries with exponential backoff for 500 errors
+- **Message Formatting**: Automatic conversion to Telegram MarkdownV2 format
+- **Tool Visualization**: Shows when agents use tools like web search
+- **Long Message Support**: Handles messages up to Telegram's 4,096 character limit
 
 ### Message Processing Features
 
@@ -125,12 +134,10 @@ This creates temporary endpoints you can use for testing.
 
 ## 📚 Additional Resources
 
-The `cheatsheets/` directory contains helpful guides:
-- `letta-cheatsheet.md` - Core Letta concepts and API usage
-- `letta-agent-management.md` - Creating and managing agents
-- `letta-memory-management.md` - Working with agent memory
-- `letta-messages-conversations.md` - Message handling patterns
-- Additional specialized guides for advanced features
+For detailed Letta usage and API documentation, visit:
+- [Letta Documentation](https://docs.letta.com) - Official documentation
+- [Letta API Reference](https://docs.letta.com/api-reference/overview) - API endpoints and examples
+- [Letta GitHub](https://github.com/letta-ai/letta) - Source code and examples
 
 ## 🔍 Troubleshooting
 
@@ -146,5 +153,23 @@ The `cheatsheets/` directory contains helpful guides:
 
 **Deployment issues?**
 - Run `modal setup` to verify authentication
-- Check requirements.txt dependencies
+- Check requirements.txt dependencies  
 - Ensure Modal app name is unique
+
+## 📝 Project Structure
+
+```
+letta-telegram/
+├── main.py           # Main bot application with webhook handlers
+├── setup.py          # Webhook configuration script
+├── requirements.txt  # Python dependencies
+└── README.md        # This file
+```
+
+## 🤝 Contributing
+
+This project is part of the Letta AI ecosystem. For questions or contributions, please visit the [Letta-Telegram GitHub repository](https://github.com/letta-ai/letta-telegram).
+
+## 📜 License
+
+This project follows the same license as the main Letta project. See the [Letta repository](https://github.com/letta-ai/letta) for license details.

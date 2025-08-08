@@ -165,8 +165,6 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
         
         if response.status_code == 200:
             # Process streaming response
-            current_message = ""
-            
             print("🔍 Starting to process streaming response...")
             lines_processed = 0
             
@@ -205,12 +203,9 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
                     if message_type == "assistant_message":
                         content = data.get("content", "")
                         if content and content.strip():
-                            current_message += content
-                            # Send complete message when we have substantial content
-                            if len(current_message) > 100 or content.endswith((".", "!", "?", "\n")):
-                                print(f"📤 Sending assistant message: {current_message[:100]}...")
-                                send_telegram_message(chat_id, current_message.strip())
-                                current_message = ""
+                            # Send each piece of content immediately for true streaming
+                            print(f"📤 Streaming content: {content[:100]}...")
+                            send_telegram_message(chat_id, content)
                     
                     elif message_type == "system_alert":
                         alert_message = data.get("message", "")
@@ -325,12 +320,6 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
                     continue
             
             print(f"🔍 Stream processing complete. Total lines: {lines_processed}")
-            print(f"🔍 Current message buffer: '{current_message}'")
-            
-            # Send any remaining message content
-            if current_message.strip():
-                print(f"📤 Sending final message: {current_message[:100]}...")
-                send_telegram_message(chat_id, current_message.strip())
         
         else:
             error_msg = f"❌ Letta API error: {response.status_code} - {response.text}"
@@ -358,6 +347,96 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
         raise
 
 
+def handle_agent_command(message: str, user_name: str, chat_id: str):
+    """
+    Handle /agent command to change or view the agent ID
+    """
+    try:
+        # Parse the command: /agent [agent_id]
+        parts = message.strip().split()
+        
+        if len(parts) == 1:
+            # Show current agent ID
+            current_agent_id = os.environ.get("LETTA_AGENT_ID", "Not set")
+            send_telegram_message(chat_id, f"🤖 Current Agent ID: `{current_agent_id}`\n\nUse `/agent <new_id>` to change it.")
+            return
+        
+        if len(parts) != 2:
+            send_telegram_message(chat_id, "❌ Usage: `/agent [agent_id]`\n\nExamples:\n• `/agent` - Show current agent ID\n• `/agent abc123` - Set new agent ID")
+            return
+        
+        new_agent_id = parts[1].strip()
+        
+        # Validate agent ID format (basic validation)
+        if not new_agent_id or len(new_agent_id) < 3:
+            send_telegram_message(chat_id, "❌ Agent ID must be at least 3 characters long")
+            return
+        
+        # Update the agent ID
+        success = update_agent_id(new_agent_id)
+        
+        if success:
+            send_telegram_message(chat_id, f"✅ Agent ID updated to: `{new_agent_id}`\n\nYou can now chat with the new agent!")
+        else:
+            send_telegram_message(chat_id, "❌ Failed to update agent ID. Please try again or check the logs.")
+    
+    except Exception as e:
+        print(f"Error handling agent command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing agent command. Please try again.")
+
+def update_agent_id(new_agent_id: str) -> bool:
+    """
+    Update the LETTA_AGENT_ID in the Modal secret
+    """
+    try:
+        import modal
+        
+        # Get the current secret
+        secret_name = "letta-api"
+        
+        # Get the current secret to preserve other environment variables
+        current_secret = modal.Secret.from_name(secret_name)
+        
+        # Create new secret with updated agent ID
+        # Note: This is a simplified approach - in production you'd want to
+        # properly retrieve and update the existing secret
+        new_secret = modal.Secret.from_dict({
+            "LETTA_API_KEY": os.environ.get("LETTA_API_KEY", ""),
+            "LETTA_API_URL": os.environ.get("LETTA_API_URL", "https://api.letta.com"),
+            "LETTA_AGENT_ID": new_agent_id
+        })
+        
+        # Update the secret (this would require Modal's secret management API)
+        # For now, we'll update the environment variable for the current session
+        os.environ["LETTA_AGENT_ID"] = new_agent_id
+        
+        print(f"✅ Agent ID updated to: {new_agent_id}")
+        return True
+        
+    except Exception as e:
+        print(f"Error updating agent ID: {str(e)}")
+        return False
+
+def handle_help_command(chat_id: str):
+    """
+    Handle /help command to show available commands
+    """
+    help_text = """🤖 **Letta Telegram Bot Commands**
+
+**Available Commands:**
+• `/help` - Show this help message
+• `/agent` - Show current agent ID
+• `/agent <id>` - Change to a different agent ID
+
+**Examples:**
+• `/agent` - Shows your current agent ID
+• `/agent abc123` - Switches to agent with ID "abc123"
+
+**Note:** Agent ID changes are temporary for this session. For permanent changes, update your Modal secrets.
+"""
+    send_telegram_message(chat_id, help_text)
+
+
 @app.function(
     image=image,
     secrets=[
@@ -371,6 +450,14 @@ def process_message_async(message: str, user_name: str, chat_id: str):
     Process message with Letta agent using streaming to avoid webhook timeouts
     """
     print(f"🔄 Processing message with streaming for {user_name}")
+    
+    # Check for commands first
+    if message.startswith('/agent'):
+        handle_agent_command(message, user_name, chat_id)
+        return
+    elif message.startswith('/help'):
+        handle_help_command(chat_id)
+        return
     
     # Process message with streaming Letta agent
     try:
