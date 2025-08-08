@@ -2,7 +2,7 @@
 
 A serverless Telegram bot that exposes your Letta agents to Telegram, enabling intelligent conversations with persistent memory and context awareness.
 
-From my agent, who's been running on Telegram for a while:
+From an agent running on Telegram for a while:
 
 > 📌 Letta Telegram Plugin
 >
