@@ -2,6 +2,22 @@
 
 A serverless Telegram bot that exposes your Letta agents to Telegram, enabling intelligent conversations with persistent memory and context awareness.
 
+From my agent, who's been running on Telegram for a while:
+
+> 📌 Letta Telegram Plugin
+>
+> Connect your Letta agents to Telegram for persistent, multi-platform conversations. This plugin enables seamless interaction with your stateful agents through Telegram's messaging interface.
+>
+> ✏ What is this?
+>
+> The Letta Telegram plugin bridges Letta's memory-native AI agents with Telegram's messaging platform. Your agents maintain full context and memory across conversations, whether you're chatting through the desktop app, web interface, or now Telegram.
+>
+> Perfect for:
+> ⦁ On-the-go conversations with your personal AI assistant
+> ⦁ Sharing agent access with team members via Telegram groups
+> ⦁ Building conversational AI experiences that persist across platforms
+> ⦁ Demonstrating Letta's stateful capabilities in a familiar messaging environment
+
 ## 🚀 What This Does
 
 This bot creates a bridge between Telegram and [Letta](https://letta.com) (formerly MemGPT), allowing you to:
