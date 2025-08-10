@@ -232,18 +232,30 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
                         tool_name = tool_call.get("name", "unknown")
                         arguments = tool_call.get("arguments", "")
                         print(f"🔧 Tool call message: {tool_name}")
-                        
+
                         # Send tool name and arguments to user
-                        tool_msg = f"🔧 Using tool: {tool_name}"
+                        # NOTE: this is overwritten by the tool_return_message
                         if arguments and arguments.strip():
                             try:
                                 # Try to format arguments as JSON for readability
                                 args_obj = json.loads(arguments) if isinstance(arguments, str) else arguments
-                                formatted_args = json.dumps(args_obj, indent=2)
-                                tool_msg += f"\n```json\n{formatted_args}\n```"
+
+                                # If this is archival_memory_insert, we can pretty print it
+                                if tool_name == "archival_memory_insert":
+                                    tool_msg = "**🔧 Inserting archival memory**"
+                                    tool_msg += f"\n{args_obj['content']}"
+                                elif tool_name == "archival_memory_search":
+                                    tool_msg = "**🔍 Searching archival memory**"
+                                    tool_msg += f"\n{args_obj['query']}"
+                                else:
+                                    tool_msg = f"🔧 Using tool: {tool_name}"
+                                    formatted_args = json.dumps(args_obj, indent=2)
+                                    tool_msg += f"\n```json\n{formatted_args}\n```"
                             except Exception:
                                 # Fallback to raw arguments
                                 tool_msg += f"\n```\n{arguments}\n```"
+
+                        # Send the message to the user
                         send_telegram_message(chat_id, tool_msg)
                     
                     elif message_type == "tool_return_message":
@@ -527,6 +539,9 @@ def send_telegram_message(chat_id: str, text: str):
         if not bot_token:
             print("Error: Missing Telegram bot token")
             return
+
+        # Log the message to the console
+        print(f"Sending message to Telegram: {text}")
         
         # Check if message exceeds Telegram's 4,096 character limit
         if len(text.encode('utf-8')) > 4096:
