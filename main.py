@@ -243,10 +243,10 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
                                 # If this is archival_memory_insert, we can pretty print it
                                 if tool_name == "archival_memory_insert":
                                     tool_msg = "**🔧 Inserting archival memory**"
-                                    tool_msg += f"\n{args_obj['content']}"
+                                    tool_msg += f"\n\n{blockquote_message(args_obj['content'])}"
                                 elif tool_name == "archival_memory_search":
                                     tool_msg = "**🔍 Searching archival memory**"
-                                    tool_msg += f"\n{args_obj['query']}"
+                                    tool_msg += f"\n\n{blockquote_message(args_obj['query'])}"
                                 else:
                                     tool_msg = f"🔧 Using tool: {tool_name}"
                                     formatted_args = json.dumps(args_obj, indent=2)
@@ -358,6 +358,11 @@ def process_with_letta_agent_stream(message: str, user_name: str, chat_id: str):
         send_telegram_message(chat_id, "Unexpected error occurred. Check logs for details.")
         raise
 
+def blockquote_message(message: str) -> str:
+    """
+    Blockquote a message by adding a > to the beginning of each line
+    """
+    return "\n".join([f"> {line}" for line in message.split("\n")])
 
 def handle_agent_command(message: str, user_name: str, chat_id: str):
     """
