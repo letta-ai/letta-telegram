@@ -105,7 +105,7 @@ def telegram_webhook(update: dict):
                                     send_telegram_message(chat_id, content)
 
                             elif message_type == "reasoning_message":
-                                content = "> **Reasoning**\n\n" + blockquote_message(getattr(event, 'reasoning', ''))
+                                content = "> **Reasoning**\n>\n" + blockquote_message(getattr(event, 'reasoning', ''))
                                 send_telegram_message(chat_id, content)
                             
                             elif message_type == "system_alert":
