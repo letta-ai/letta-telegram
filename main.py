@@ -23,58 +23,57 @@ app = modal.App("letta-telegram-bot", image=image)
         modal.Secret.from_name("letta-api")
     ]
 )
-@modal.fastapi_endpoint(method="POST")
-def telegram_webhook(update: dict):
+def process_message_async(update: dict):
     """
-    Webhook that processes messages using Letta SDK streaming
+    Background task to process messages using Letta SDK streaming or non-streaming
     """
+    import time
     from letta_client import Letta
 
-    print(f"Received update: {update}")
+    # Configuration: Set to False for models like Gemini that don't support streaming
+    USE_STREAMING = False
+
+    print(f"Background processing update: {update}")
     
     try:
         # Extract message details from Telegram update
-        if "message" in update and "text" in update["message"]:
+        if "message" not in update or "text" not in update["message"]:
+            return
+            
+        message_text = update["message"]["text"]
+        chat_id = str(update["message"]["chat"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        print(f"Processing message: {message_text} from {user_name} in chat {chat_id}")
 
-            message_text = update["message"]["text"]
-            chat_id = str(update["message"]["chat"]["id"])
-            user_name = update["message"]["from"].get("username", "Unknown")
-            send_telegram_typing(chat_id)
-            print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
-
-            # Handle commands
-            if message_text.startswith('/agent'):
-                handle_agent_command(message_text, user_name, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/help'):
-                handle_help_command(chat_id)
-                return {"ok": True}
+        # Send initial processing indicator
+        send_telegram_message(chat_id, "🤖 Processing your message...")
+        
+        # Process regular messages with Letta streaming
+        print("Loading Letta client")
+        letta_api_key = os.environ.get("LETTA_API_KEY")
+        letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+        agent_id = os.environ.get("LETTA_AGENT_ID")
+        
+        if not letta_api_key:
+            send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
+            return
             
-            # Process regular messages with Letta streaming
-            print("Loading Letta client")
-            letta_api_key = os.environ.get("LETTA_API_KEY")
-            letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
-            agent_id = os.environ.get("LETTA_AGENT_ID")
-            
-            if not letta_api_key:
-                send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
-                return {"ok": True}
-                
-            if not agent_id:
-                send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_AGENT_ID")
-                return {"ok": True}
-            
-            # Initialize Letta client
-            print("Initializing Letta client")
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
-            
-            # Add context about the source and user
-            context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text}"
-            print(f"Context message: {context_message}")
-            
-            # Stream the agent response
-            try:
-                print("Streaming response")
+        if not agent_id:
+            send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_AGENT_ID")
+            return
+        
+        # Initialize Letta client
+        print("Initializing Letta client")
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        # Add context about the source and user
+        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text}"
+        print(f"Context message: {context_message}")
+        
+        # Process agent response (streaming or non-streaming based on config)
+        try:
+            if USE_STREAMING:
+                print("Using streaming response")
                 response_stream = client.agents.messages.create_stream(
                     agent_id=agent_id,
                     messages=[
@@ -88,17 +87,27 @@ def telegram_webhook(update: dict):
                             ]
                         }
                     ],
-                    
                 )
                 
-                # Process streaming response
+                # Process streaming response with timeout
+                start_time = time.time()
+                last_activity = time.time()
+                timeout_seconds = 120  # 2 minute timeout
+                
                 for event in response_stream:
+                    current_time = time.time()
+                    
+                    # Check for overall timeout
+                    if current_time - start_time > timeout_seconds:
+                        send_telegram_message(chat_id, "⏰ Response took too long and was terminated. Please try again with a simpler message.")
+                        break
+                    
+                    # Send periodic "still processing" messages if no activity
+                    if current_time - last_activity > 30:
+                        send_telegram_typing(chat_id)
+                        last_activity = current_time
+                    
                     print(f"Processing event: {event}")
-                    send_telegram_typing(chat_id)
-                    # event_as_json = event.model_dump_json(indent=2)
-                    # send_telegram_message(chat_id, f"```\n{event_as_json}\n```")
-
-                    print(f"Sent event: {event}")
                     try:
                         if hasattr(event, 'message_type'):
                             message_type = event.message_type
@@ -107,33 +116,20 @@ def telegram_webhook(update: dict):
                                 content = getattr(event, 'content', '')
                                 if content and content.strip():
                                     send_telegram_message(chat_id, content)
+                                    last_activity = current_time
 
                             elif message_type == "reasoning_message":
                                 content = "> **Reasoning**\n" + blockquote_message(getattr(event, 'reasoning', ''))
                                 send_telegram_message(chat_id, content)
+                                last_activity = current_time
                             
                             elif message_type == "system_alert":
                                 alert_message = getattr(event, 'message', '')
                                 if alert_message and alert_message.strip():
                                     send_telegram_message(chat_id, f"ℹ️ {alert_message}")
+                                    last_activity = current_time
                             
                             elif message_type == "tool_call_message":
-                                # {
-                                #     "id": "message-ca9f8365-fc5c-4650-8665-e1eb0907d97a",
-                                #     "date": "2025-08-15T03:49:02Z",
-                                #     "name": null,
-                                #     "message_type": "tool_call_message",
-                                #     "otid": "ca9f8365-fc5c-4650-8665-e1eb0907d901",
-                                #     "sender_id": null,
-                                #     "step_id": "step-93fe2195-fe52-4e17-b4e4-8752cc2bbf77",
-                                #     "is_err": null,
-                                #     "tool_call": {
-                                #         "name": "archival_memory_search",
-                                #         "arguments": "{\"query\": \"OpenAI\", \"page\": 0, \"start\": 0, \"request_heartbeat\": true}",
-                                #         "tool_call_id": "call_vJk5jsQ7FqiFWVVfmXE26Hem"
-                                #     }
-                                #  }
-
                                 tool_call = event.tool_call
                                 tool_name = tool_call.name
                                 arguments = tool_call.arguments
@@ -153,50 +149,153 @@ def telegram_webhook(update: dict):
                                             formatted_args = json.dumps(args_obj, indent=2)
                                             tool_msg += f"\n```json\n{formatted_args}\n```"
                                     except Exception as e:
-                                        send_telegram_message(chat_id, f"Experienced an error: {e}")
+                                        print(f"Error parsing tool arguments: {e}")
                                         tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
                                     
                                     send_telegram_message(chat_id, tool_msg)
+                                    last_activity = current_time
                             
-                            # Disabled, no need to show tool return messages
-                            # elif message_type == "tool_return_message":
-                            #     tool_name = getattr(event, 'name', 'unknown')
-                            #     status = getattr(event, 'status', 'unknown')
-                                
-                            #     if tool_name == "web_search" and status == "success":
-                            #         tool_return = getattr(event, 'tool_return', '')
-                            #         if tool_return:
-                            #             try:
-                            #                 return_data = json.loads(tool_return)
-                            #                 results = return_data.get("results", {})
-                                            
-                            #                 for _, result in results.items():
-                            #                     if result.get("raw_results", {}).get("success"):
-                            #                         search_data = result["raw_results"]["data"]
-                            #                         if search_data:
-                            #                             first_result = search_data[0]
-                            #                             title = first_result.get("title", "")
-                            #                             description = first_result.get("description", "")
-                            #                             url = first_result.get("url", "")
-                                                        
-                            #                             response = f"🌤 **{title}**\n\n{description}"
-                            #                             if url:
-                            #                                 response += f"\n\n[View full forecast]({url})"
-                                                        
-                            #                             send_telegram_message(chat_id, response)
-                            #             except Exception as e:
-                            #                 print(f"⚠️  Error processing web_search results: {e}")
-                            #                 send_telegram_message(chat_id, f"🔧 {tool_name} completed")
-                                
                     except Exception as e:
                         print(f"⚠️  Error processing stream event: {e}")
                         continue
+            
+            else:
+                print("Using non-streaming response")
+                start_time = time.time()
+                timeout_seconds = 120  # 2 minute timeout
                 
-            except Exception as e:
-                send_telegram_message(chat_id, f"[MODAL ERROR] Error streaming from Letta: {str(e)}")
+                # Send non-streaming request
+                response = client.agents.messages.create(
+                    agent_id=agent_id,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": context_message
+                                }
+                            ]
+                        }
+                    ],
+                )
+                
+                # Check for timeout
+                if time.time() - start_time > timeout_seconds:
+                    send_telegram_message(chat_id, "⏰ Response took too long. Please try again with a simpler message.")
+                    return
+                
+                print(f"Received response: {response}")
+                
+                # Process the response messages (same structure as streaming events)
+                if hasattr(response, 'messages') and response.messages:
+                    for message in response.messages:
+                        try:
+                            if hasattr(message, 'message_type'):
+                                message_type = message.message_type
+                                
+                                if message_type == "assistant_message":
+                                    content = getattr(message, 'content', '')
+                                    if content and content.strip():
+                                        send_telegram_message(chat_id, content)
+
+                                elif message_type == "reasoning_message":
+                                    content = "> **Reasoning**\n" + blockquote_message(getattr(message, 'reasoning', ''))
+                                    send_telegram_message(chat_id, content)
+                                
+                                elif message_type == "system_alert":
+                                    alert_message = getattr(message, 'message', '')
+                                    if alert_message and alert_message.strip():
+                                        send_telegram_message(chat_id, f"ℹ️ {alert_message}")
+                                
+                                elif message_type == "tool_call_message":
+                                    tool_call = message.tool_call
+                                    tool_name = tool_call.name
+                                    arguments = tool_call.arguments
+                                    
+                                    if arguments and arguments.strip():
+                                        try:
+                                            # Parse the JSON arguments string into a Python object
+                                            args_obj = json.loads(arguments)
+                                            
+                                            if tool_name == "archival_memory_insert":
+                                                tool_msg = "**Remembered**"
+                                                tool_msg += f"\n{blockquote_message(args_obj['content'])}"
+                                            elif tool_name == "archival_memory_search":
+                                                tool_msg = f"**Remembering** `{args_obj['query']}`"
+                                            else:
+                                                tool_msg = f"🔧 Using tool: {tool_name}"
+                                                formatted_args = json.dumps(args_obj, indent=2)
+                                                tool_msg += f"\n```json\n{formatted_args}\n```"
+                                        except Exception as e:
+                                            print(f"Error parsing tool arguments: {e}")
+                                            tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
+                                        
+                                        send_telegram_message(chat_id, tool_msg)
+                                        
+                        except Exception as e:
+                            print(f"⚠️  Error processing message: {e}")
+                            continue
+                else:
+                    # Fallback: send simple response
+                    if hasattr(response, 'content') and response.content:
+                        content = response.content.strip()
+                        if content:
+                            send_telegram_message(chat_id, content)
+                    else:
+                        send_telegram_message(chat_id, f"Response: {str(response)}")
+            
+        except Exception as e:
+            error_msg = f"Error communicating with Letta: {str(e)}"
+            print(f"⚠️  {error_msg}")
+            send_telegram_message(chat_id, f"❌ {error_msg}")
+        
+    except Exception as e:
+        error_msg = f"Error in background processing: {str(e)}"
+        print(f"⚠️  {error_msg}")
+        if 'chat_id' in locals():
+            send_telegram_message(chat_id, f"❌ {error_msg}")
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("telegram-bot"),  
+        modal.Secret.from_name("letta-api")
+    ]
+)
+@modal.fastapi_endpoint(method="POST")
+def telegram_webhook(update: dict):
+    """
+    Fast webhook handler that spawns background processing
+    """
+    print(f"Received update: {update}")
+    
+    try:
+        # Extract message details from Telegram update
+        if "message" in update and "text" in update["message"]:
+            message_text = update["message"]["text"]
+            chat_id = str(update["message"]["chat"]["id"])
+            user_name = update["message"]["from"].get("username", "Unknown")
+            print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
+
+            # Handle commands synchronously (they're fast)
+            if message_text.startswith('/agent'):
+                handle_agent_command(message_text, user_name, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/help'):
+                handle_help_command(chat_id)
+                return {"ok": True}
+            
+            # Send immediate feedback
+            send_telegram_typing(chat_id)
+            send_telegram_message(chat_id, "✨ Message received! Processing in the background...")
+            
+            # Spawn background processing for regular messages
+            print("Spawning background task")
+            process_message_async.spawn(update)
             
     except Exception as e:
-        raise Exception(f"Error processing webhook: {str(e)}")
+        print(f"Error in webhook handler: {str(e)}")
     
     # Always return OK to Telegram quickly
     return {"ok": True}
