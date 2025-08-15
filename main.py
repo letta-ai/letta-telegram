@@ -45,9 +45,6 @@ def process_message_async(update: dict):
         user_name = update["message"]["from"].get("username", "Unknown")
         print(f"Processing message: {message_text} from {user_name} in chat {chat_id}")
 
-        # Send initial processing indicator
-        send_telegram_message(chat_id, "🤖 Processing your message...")
-        
         # Process regular messages with Letta streaming
         print("Loading Letta client")
         letta_api_key = os.environ.get("LETTA_API_KEY")
@@ -288,7 +285,6 @@ def telegram_webhook(update: dict):
             
             # Send immediate feedback
             send_telegram_typing(chat_id)
-            send_telegram_message(chat_id, "✨ Message received! Processing in the background...")
             
             # Spawn background processing for regular messages
             print("Spawning background task")
