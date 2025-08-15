@@ -25,13 +25,11 @@ app = modal.App("letta-telegram-bot", image=image)
 )
 def process_message_async(update: dict):
     """
-    Background task to process messages using Letta SDK streaming or non-streaming
+    Background task to process messages using Letta SDK streaming
     """
     import time
     from letta_client import Letta
 
-    # Configuration: Set to False for models like Gemini that don't support streaming
-    USE_STREAMING = False
 
     print(f"Background processing update: {update}")
     
@@ -67,180 +65,98 @@ def process_message_async(update: dict):
         context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text}"
         print(f"Context message: {context_message}")
         
-        # Process agent response (streaming or non-streaming based on config)
+        # Process agent response with streaming
         try:
-            if USE_STREAMING:
-                print("Using streaming response")
-                response_stream = client.agents.messages.create_stream(
-                    agent_id=agent_id,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": context_message
-                                }
-                            ]
-                        }
-                    ],
-                )
+            print("Using streaming response")
+            response_stream = client.agents.messages.create_stream(
+                agent_id=agent_id,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": context_message
+                            }
+                        ]
+                    }
+                ],
+                request_options={
+                    "additional_body_parameters": {
+                        "include_pings": True
+                    }
+                }
+            )
+            
+            # Process streaming response with timeout
+            start_time = time.time()
+            last_activity = time.time()
+            timeout_seconds = 120  # 2 minute timeout
+            
+            for event in response_stream:
+                current_time = time.time()
                 
-                # Process streaming response with timeout
-                start_time = time.time()
-                last_activity = time.time()
-                timeout_seconds = 120  # 2 minute timeout
+                # Check for overall timeout
+                if current_time - start_time > timeout_seconds:
+                    send_telegram_message(chat_id, "⏰ Response took too long and was terminated. Please try again with a simpler message.")
+                    break
                 
-                for event in response_stream:
-                    current_time = time.time()
-                    
-                    # Check for overall timeout
-                    if current_time - start_time > timeout_seconds:
-                        send_telegram_message(chat_id, "⏰ Response took too long and was terminated. Please try again with a simpler message.")
-                        break
-                    
-                    # Send periodic "still processing" messages if no activity
-                    if current_time - last_activity > 30:
-                        send_telegram_typing(chat_id)
-                        last_activity = current_time
-                    
-                    print(f"Processing event: {event}")
-                    try:
-                        if hasattr(event, 'message_type'):
-                            message_type = event.message_type
-                            
-                            if message_type == "assistant_message":
-                                content = getattr(event, 'content', '')
-                                if content and content.strip():
-                                    send_telegram_message(chat_id, content)
-                                    last_activity = current_time
-
-                            elif message_type == "reasoning_message":
-                                content = "> **Reasoning**\n" + blockquote_message(getattr(event, 'reasoning', ''))
+                # Send periodic "still processing" messages if no activity
+                if current_time - last_activity > 30:
+                    send_telegram_typing(chat_id)
+                    last_activity = current_time
+                
+                print(f"Processing event: {event}")
+                try:
+                    if hasattr(event, 'message_type'):
+                        message_type = event.message_type
+                        
+                        if message_type == "assistant_message":
+                            content = getattr(event, 'content', '')
+                            if content and content.strip():
                                 send_telegram_message(chat_id, content)
                                 last_activity = current_time
-                            
-                            elif message_type == "system_alert":
-                                alert_message = getattr(event, 'message', '')
-                                if alert_message and alert_message.strip():
-                                    send_telegram_message(chat_id, f"ℹ️ {alert_message}")
-                                    last_activity = current_time
-                            
-                            elif message_type == "tool_call_message":
-                                tool_call = event.tool_call
-                                tool_name = tool_call.name
-                                arguments = tool_call.arguments
-                                
-                                if arguments and arguments.strip():
-                                    try:
-                                        # Parse the JSON arguments string into a Python object
-                                        args_obj = json.loads(arguments)
-                                        
-                                        if tool_name == "archival_memory_insert":
-                                            tool_msg = "**Remembered**"
-                                            tool_msg += f"\n{blockquote_message(args_obj['content'])}"
-                                        elif tool_name == "archival_memory_search":
-                                            tool_msg = f"**Remembering** `{args_obj['query']}`"
-                                        else:
-                                            tool_msg = f"🔧 Using tool: {tool_name}"
-                                            formatted_args = json.dumps(args_obj, indent=2)
-                                            tool_msg += f"\n```json\n{formatted_args}\n```"
-                                    except Exception as e:
-                                        print(f"Error parsing tool arguments: {e}")
-                                        tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
-                                    
-                                    send_telegram_message(chat_id, tool_msg)
-                                    last_activity = current_time
-                            
-                    except Exception as e:
-                        print(f"⚠️  Error processing stream event: {e}")
-                        continue
-            
-            else:
-                print("Using non-streaming response")
-                start_time = time.time()
-                timeout_seconds = 120  # 2 minute timeout
-                
-                # Send non-streaming request
-                response = client.agents.messages.create(
-                    agent_id=agent_id,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": context_message
-                                }
-                            ]
-                        }
-                    ],
-                )
-                
-                # Check for timeout
-                if time.time() - start_time > timeout_seconds:
-                    send_telegram_message(chat_id, "⏰ Response took too long. Please try again with a simpler message.")
-                    return
-                
-                print(f"Received response: {response}")
-                
-                # Process the response messages (same structure as streaming events)
-                if hasattr(response, 'messages') and response.messages:
-                    for message in response.messages:
-                        try:
-                            if hasattr(message, 'message_type'):
-                                message_type = message.message_type
-                                
-                                if message_type == "assistant_message":
-                                    content = getattr(message, 'content', '')
-                                    if content and content.strip():
-                                        send_telegram_message(chat_id, content)
 
-                                elif message_type == "reasoning_message":
-                                    content = "> **Reasoning**\n" + blockquote_message(getattr(message, 'reasoning', ''))
-                                    send_telegram_message(chat_id, content)
-                                
-                                elif message_type == "system_alert":
-                                    alert_message = getattr(message, 'message', '')
-                                    if alert_message and alert_message.strip():
-                                        send_telegram_message(chat_id, f"ℹ️ {alert_message}")
-                                
-                                elif message_type == "tool_call_message":
-                                    tool_call = message.tool_call
-                                    tool_name = tool_call.name
-                                    arguments = tool_call.arguments
-                                    
-                                    if arguments and arguments.strip():
-                                        try:
-                                            # Parse the JSON arguments string into a Python object
-                                            args_obj = json.loads(arguments)
-                                            
-                                            if tool_name == "archival_memory_insert":
-                                                tool_msg = "**Remembered**"
-                                                tool_msg += f"\n{blockquote_message(args_obj['content'])}"
-                                            elif tool_name == "archival_memory_search":
-                                                tool_msg = f"**Remembering** `{args_obj['query']}`"
-                                            else:
-                                                tool_msg = f"🔧 Using tool: {tool_name}"
-                                                formatted_args = json.dumps(args_obj, indent=2)
-                                                tool_msg += f"\n```json\n{formatted_args}\n```"
-                                        except Exception as e:
-                                            print(f"Error parsing tool arguments: {e}")
-                                            tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
-                                        
-                                        send_telegram_message(chat_id, tool_msg)
-                                        
-                        except Exception as e:
-                            print(f"⚠️  Error processing message: {e}")
-                            continue
-                else:
-                    # Fallback: send simple response
-                    if hasattr(response, 'content') and response.content:
-                        content = response.content.strip()
-                        if content:
+                        elif message_type == "reasoning_message":
+                            content = "> **Reasoning**\n" + blockquote_message(getattr(event, 'reasoning', ''))
                             send_telegram_message(chat_id, content)
-                    else:
-                        send_telegram_message(chat_id, f"Response: {str(response)}")
+                            last_activity = current_time
+                        
+                        elif message_type == "system_alert":
+                            alert_message = getattr(event, 'message', '')
+                            if alert_message and alert_message.strip():
+                                send_telegram_message(chat_id, f"ℹ️ {alert_message}")
+                                last_activity = current_time
+                        
+                        elif message_type == "tool_call_message":
+                            tool_call = event.tool_call
+                            tool_name = tool_call.name
+                            arguments = tool_call.arguments
+                            
+                            if arguments and arguments.strip():
+                                try:
+                                    # Parse the JSON arguments string into a Python object
+                                    args_obj = json.loads(arguments)
+                                    
+                                    if tool_name == "archival_memory_insert":
+                                        tool_msg = "**Remembered**"
+                                        tool_msg += f"\n{blockquote_message(args_obj['content'])}"
+                                    elif tool_name == "archival_memory_search":
+                                        tool_msg = f"**Remembering** `{args_obj['query']}`"
+                                    else:
+                                        tool_msg = f"🔧 Using tool: {tool_name}"
+                                        formatted_args = json.dumps(args_obj, indent=2)
+                                        tool_msg += f"\n```json\n{formatted_args}\n```"
+                                except Exception as e:
+                                    print(f"Error parsing tool arguments: {e}")
+                                    tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
+                                
+                                send_telegram_message(chat_id, tool_msg)
+                                last_activity = current_time
+                        
+                except Exception as e:
+                    print(f"⚠️  Error processing stream event: {e}")
+                    continue
             
         except Exception as e:
             error_msg = f"Error communicating with Letta: {str(e)}"
