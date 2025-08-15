@@ -39,6 +39,7 @@ def telegram_webhook(update: dict):
             message_text = update["message"]["text"]
             chat_id = str(update["message"]["chat"]["id"])
             user_name = update["message"]["from"].get("username", "Unknown")
+            send_telegram_typing(chat_id)
             print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
 
             # Handle commands
@@ -86,13 +87,16 @@ def telegram_webhook(update: dict):
                                 }
                             ]
                         }
-                    ]
+                    ],
+                    
                 )
                 
                 # Process streaming response
                 for event in response_stream:
                     print(f"Processing event: {event}")
-                    # send_telegram_message(chat_id, f"🤖 {event}")
+                    send_telegram_typing(chat_id)
+                    # event_as_json = event.model_dump_json(indent=2)
+                    # send_telegram_message(chat_id, f"```\n{event_as_json}\n```")
 
                     print(f"Sent event: {event}")
                     try:
@@ -105,7 +109,7 @@ def telegram_webhook(update: dict):
                                     send_telegram_message(chat_id, content)
 
                             elif message_type == "reasoning_message":
-                                content = "> **Reasoning**\n>\n" + blockquote_message(getattr(event, 'reasoning', ''))
+                                content = "> **Reasoning**\n" + blockquote_message(getattr(event, 'reasoning', ''))
                                 send_telegram_message(chat_id, content)
                             
                             elif message_type == "system_alert":
@@ -114,77 +118,76 @@ def telegram_webhook(update: dict):
                                     send_telegram_message(chat_id, f"ℹ️ {alert_message}")
                             
                             elif message_type == "tool_call_message":
-                                tool_call = getattr(event, 'tool_call', {})
-                                tool_name = tool_call.get('name', 'unknown') if isinstance(tool_call, dict) else 'unknown'
-                                arguments = tool_call.get('arguments', '') if isinstance(tool_call, dict) else ''
+                                # {
+                                #     "id": "message-ca9f8365-fc5c-4650-8665-e1eb0907d97a",
+                                #     "date": "2025-08-15T03:49:02Z",
+                                #     "name": null,
+                                #     "message_type": "tool_call_message",
+                                #     "otid": "ca9f8365-fc5c-4650-8665-e1eb0907d901",
+                                #     "sender_id": null,
+                                #     "step_id": "step-93fe2195-fe52-4e17-b4e4-8752cc2bbf77",
+                                #     "is_err": null,
+                                #     "tool_call": {
+                                #         "name": "archival_memory_search",
+                                #         "arguments": "{\"query\": \"OpenAI\", \"page\": 0, \"start\": 0, \"request_heartbeat\": true}",
+                                #         "tool_call_id": "call_vJk5jsQ7FqiFWVVfmXE26Hem"
+                                #     }
+                                #  }
+
+                                tool_call = event.tool_call
+                                tool_name = tool_call.name
+                                arguments = tool_call.arguments
                                 
                                 if arguments and arguments.strip():
                                     try:
-                                        args_obj = json.loads(arguments) if isinstance(arguments, str) else arguments
+                                        # Parse the JSON arguments string into a Python object
+                                        args_obj = json.loads(arguments)
                                         
                                         if tool_name == "archival_memory_insert":
-                                            tool_msg = "**🔧 Inserting archival memory**"
-                                            tool_msg += f"\n\n{blockquote_message(args_obj['content'])}"
+                                            tool_msg = "**Remembered**"
+                                            tool_msg += f"\n{blockquote_message(args_obj['content'])}"
                                         elif tool_name == "archival_memory_search":
-                                            tool_msg = "**🔍 Searching archival memory**"
-                                            tool_msg += f"\n\n{blockquote_message(args_obj['query'])}"
+                                            tool_msg = f"**Remembering** `{args_obj['query']}`"
                                         else:
                                             tool_msg = f"🔧 Using tool: {tool_name}"
                                             formatted_args = json.dumps(args_obj, indent=2)
                                             tool_msg += f"\n```json\n{formatted_args}\n```"
-                                    except Exception:
+                                    except Exception as e:
+                                        send_telegram_message(chat_id, f"Experienced an error: {e}")
                                         tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
                                     
                                     send_telegram_message(chat_id, tool_msg)
                             
-                            elif message_type == "tool_return_message":
-                                tool_name = getattr(event, 'name', 'unknown')
-                                status = getattr(event, 'status', 'unknown')
+                            # Disabled, no need to show tool return messages
+                            # elif message_type == "tool_return_message":
+                            #     tool_name = getattr(event, 'name', 'unknown')
+                            #     status = getattr(event, 'status', 'unknown')
                                 
-                                if tool_name == "web_search" and status == "success":
-                                    tool_return = getattr(event, 'tool_return', '')
-                                    if tool_return:
-                                        try:
-                                            return_data = json.loads(tool_return)
-                                            results = return_data.get("results", {})
+                            #     if tool_name == "web_search" and status == "success":
+                            #         tool_return = getattr(event, 'tool_return', '')
+                            #         if tool_return:
+                            #             try:
+                            #                 return_data = json.loads(tool_return)
+                            #                 results = return_data.get("results", {})
                                             
-                                            for _, result in results.items():
-                                                if result.get("raw_results", {}).get("success"):
-                                                    search_data = result["raw_results"]["data"]
-                                                    if search_data:
-                                                        first_result = search_data[0]
-                                                        title = first_result.get("title", "")
-                                                        description = first_result.get("description", "")
-                                                        url = first_result.get("url", "")
+                            #                 for _, result in results.items():
+                            #                     if result.get("raw_results", {}).get("success"):
+                            #                         search_data = result["raw_results"]["data"]
+                            #                         if search_data:
+                            #                             first_result = search_data[0]
+                            #                             title = first_result.get("title", "")
+                            #                             description = first_result.get("description", "")
+                            #                             url = first_result.get("url", "")
                                                         
-                                                        response = f"🌤 **{title}**\n\n{description}"
-                                                        if url:
-                                                            response += f"\n\n[View full forecast]({url})"
+                            #                             response = f"🌤 **{title}**\n\n{description}"
+                            #                             if url:
+                            #                                 response += f"\n\n[View full forecast]({url})"
                                                         
-                                                        send_telegram_message(chat_id, response)
-                                        except Exception as e:
-                                            print(f"⚠️  Error processing web_search results: {e}")
-                                            send_telegram_message(chat_id, f"🔧 {tool_name} completed")
-                        
-                        # Handle different event types based on the actual SDK structure
-                        elif hasattr(event, 'type'):
-                            event_type = event.type
-                            if event_type == 'message' and hasattr(event, 'data'):
-                                data = event.data
-                                if hasattr(data, 'content'):
-                                    content = data.content
-                                    if content and content.strip():
-                                        send_telegram_message(chat_id, content)
-                        
-                        # Fallback: try to extract any text content from the event
-                        else:
-                            for attr in ['content', 'text', 'message']:
-                                if hasattr(event, attr):
-                                    content = getattr(event, attr)
-                                    if content and str(content).strip():
-                                        send_telegram_message(chat_id, str(content))
-                                        break
-                    
+                            #                             send_telegram_message(chat_id, response)
+                            #             except Exception as e:
+                            #                 print(f"⚠️  Error processing web_search results: {e}")
+                            #                 send_telegram_message(chat_id, f"🔧 {tool_name} completed")
+                                
                     except Exception as e:
                         print(f"⚠️  Error processing stream event: {e}")
                         continue
