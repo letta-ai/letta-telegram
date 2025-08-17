@@ -81,10 +81,9 @@ def process_message_async(update: dict):
                         ]
                     }
                 ],
+                include_pings=True,
                 request_options={
-                    "additional_body_parameters": {
-                        "include_pings": True
-                    }
+                    'timeout_in_seconds': 360,
                 }
             )
             
