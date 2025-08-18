@@ -3,6 +3,7 @@ import json
 import requests
 import telegramify_markdown
 from typing import Dict, Any
+from datetime import datetime
 import modal
 
 
@@ -16,12 +17,16 @@ image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": 
 
 app = modal.App("letta-telegram-bot", image=image)
 
+# Create persistent volume for chat settings
+volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
+
 @app.function(
     image=image,
     secrets=[
         modal.Secret.from_name("telegram-bot"),  
         modal.Secret.from_name("letta-api")
     ],
+    volumes={"/data": volume}
 )
 def process_message_async(update: dict):
     """
@@ -47,14 +52,14 @@ def process_message_async(update: dict):
         print("Loading Letta client")
         letta_api_key = os.environ.get("LETTA_API_KEY")
         letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
-        agent_id = os.environ.get("LETTA_AGENT_ID")
+        agent_id = get_chat_agent(chat_id)
         
         if not letta_api_key:
             send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
             return
             
         if not agent_id:
-            send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_AGENT_ID")
+            send_telegram_message(chat_id, "❌ Configuration error: No agent configured. Use `/agent <id>` to set an agent.")
             return
         
         # Initialize Letta client
@@ -251,7 +256,8 @@ def process_message_async(update: dict):
     secrets=[
         modal.Secret.from_name("telegram-bot"),  
         modal.Secret.from_name("letta-api")
-    ]
+    ],
+    volumes={"/data": volume}
 )
 @modal.fastapi_endpoint(method="POST")
 def telegram_webhook(update: dict):
@@ -294,6 +300,49 @@ def telegram_webhook(update: dict):
 
 
 
+def get_chat_agent(chat_id: str) -> str:
+    """
+    Get the agent ID for a specific chat from volume storage
+    Falls back to environment variable if no chat-specific agent is set
+    """
+    try:
+        agent_file_path = f"/data/chats/{chat_id}/agent.json"
+        if os.path.exists(agent_file_path):
+            with open(agent_file_path, "r") as f:
+                agent_data = json.load(f)
+                return agent_data["agent_id"]
+    except Exception as e:
+        print(f"Error reading chat agent for {chat_id}: {e}")
+    
+    # Fall back to environment variable
+    return os.environ.get("LETTA_AGENT_ID")
+
+def save_chat_agent(chat_id: str, agent_id: str, agent_name: str):
+    """
+    Save the agent ID for a specific chat to volume storage
+    """
+    try:
+        chat_dir = f"/data/chats/{chat_id}"
+        os.makedirs(chat_dir, exist_ok=True)
+        
+        agent_data = {
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        agent_file_path = f"{chat_dir}/agent.json"
+        with open(agent_file_path, "w") as f:
+            json.dump(agent_data, f, indent=2)
+        
+        # Commit changes to persist them
+        volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error saving chat agent for {chat_id}: {e}")
+        return False
+
 def blockquote_message(message: str) -> str:
     """
     Blockquote a message by adding a > to the beginning of each line
@@ -302,20 +351,74 @@ def blockquote_message(message: str) -> str:
 
 def handle_agent_command(message: str, _user_name: str, chat_id: str):
     """
-    Handle /agent command to change or view the agent ID
+    Handle /agent command to list available agents or set agent ID
     """
     try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
         # Parse the command: /agent [agent_id]
         parts = message.strip().split()
         
         if len(parts) == 1:
-            # Show current agent ID
-            current_agent_id = os.environ.get("LETTA_AGENT_ID", "Not set")
-            send_telegram_message(chat_id, f"🤖 Current Agent ID: `{current_agent_id}`\n\nUse `/agent <new_id>` to change it.")
-            return
+            # List available agents and show current selection
+            try:
+                # Initialize Letta client to list agents
+                letta_api_key = os.environ.get("LETTA_API_KEY")
+                letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+                
+                if not letta_api_key:
+                    send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
+                    return
+                
+                client = Letta(token=letta_api_key, base_url=letta_api_url)
+                
+                # Get current agent for this chat
+                current_agent_id = get_chat_agent(chat_id)
+                current_agent_name = "Unknown"
+                
+                # Try to get current agent details
+                if current_agent_id:
+                    try:
+                        current_agent = client.agents.retrieve(agent_id=current_agent_id)
+                        current_agent_name = current_agent.name
+                    except:
+                        pass
+                
+                # List all available agents
+                agents = client.agents.list()
+                
+                if not agents:
+                    send_telegram_message(chat_id, "❌ No agents available. Create an agent first.")
+                    return
+                
+                # Build response message
+                response = "🤖 **Available Agents**\n\n"
+                
+                if current_agent_id:
+                    response += f"**Current Agent:** `{current_agent_id}` ({current_agent_name})\n\n"
+                else:
+                    response += "**Current Agent:** None set\n\n"
+                
+                response += "**Available Agents:**\n"
+                for agent in agents:
+                    status = "🟢" if agent.id == current_agent_id else "⚪"
+                    response += f"{status} `{agent.id}` - {agent.name}\n"
+                
+                response += f"\n**Usage:** `/agent <agent_id>` to select an agent"
+                
+                send_telegram_message(chat_id, response)
+                return
+                
+            except ApiError as e:
+                send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
+                return
+            except Exception as e:
+                send_telegram_message(chat_id, f"❌ Error listing agents: {str(e)}")
+                return
         
         if len(parts) != 2:
-            send_telegram_message(chat_id, "❌ Usage: `/agent [agent_id]`\n\nExamples:\n• `/agent` - Show current agent ID\n• `/agent abc123` - Set new agent ID")
+            send_telegram_message(chat_id, "❌ Usage: `/agent [agent_id]`\n\nExamples:\n• `/agent` - List available agents\n• `/agent abc123` - Set agent ID")
             return
         
         new_agent_id = parts[1].strip()
@@ -325,13 +428,33 @@ def handle_agent_command(message: str, _user_name: str, chat_id: str):
             send_telegram_message(chat_id, "❌ Agent ID must be at least 3 characters long")
             return
         
-        # Update the agent ID
-        success = update_agent_id(new_agent_id)
-        
-        if success:
-            send_telegram_message(chat_id, f"✅ Agent ID updated to: `{new_agent_id}`\n\nYou can now chat with the new agent!")
-        else:
-            send_telegram_message(chat_id, "❌ Failed to update agent ID. Please try again or check the logs.")
+        # Validate that the agent exists
+        try:
+            letta_api_key = os.environ.get("LETTA_API_KEY")
+            letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+            
+            if not letta_api_key:
+                send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
+                return
+            
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            agent = client.agents.retrieve(agent_id=new_agent_id)
+            
+            # Save the agent selection to volume storage
+            success = save_chat_agent(chat_id, new_agent_id, agent.name)
+            
+            if success:
+                send_telegram_message(chat_id, f"✅ Agent set to: `{new_agent_id}` ({agent.name})\n\nYou can now chat with this agent!")
+            else:
+                send_telegram_message(chat_id, "❌ Failed to save agent selection. Please try again.")
+                
+        except ApiError as e:
+            if hasattr(e, 'status_code') and e.status_code == 404:
+                send_telegram_message(chat_id, f"❌ Agent `{new_agent_id}` not found. Use `/agent` to see available agents.")
+            else:
+                send_telegram_message(chat_id, f"❌ Error validating agent: {e}")
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error setting agent: {str(e)}")
     
     except Exception as e:
         print(f"Error handling agent command: {str(e)}")
@@ -339,24 +462,6 @@ def handle_agent_command(message: str, _user_name: str, chat_id: str):
         
         # Re-raise the exception to preserve call stack in logs
         raise
-
-def update_agent_id(new_agent_id: str) -> bool:
-    """
-    Update the LETTA_AGENT_ID in the Modal secret
-    """
-    try:
-        # Note: This is a simplified approach - in production you'd want to
-        # properly retrieve and update the existing secret via Modal's API
-        
-        # Update the environment variable for the current session
-        os.environ["LETTA_AGENT_ID"] = new_agent_id
-        
-        print(f"✅ Agent ID updated to: {new_agent_id}")
-        return True
-        
-    except Exception as e:
-        print(f"Error updating agent ID: {str(e)}")
-        return False
 
 def handle_help_command(chat_id: str):
     """
@@ -366,14 +471,14 @@ def handle_help_command(chat_id: str):
 
 **Available Commands:**
 • `/help` - Show this help message
-• `/agent` - Show current agent ID
-• `/agent <id>` - Change to a different agent ID
+• `/agent` - List all available agents and show current selection
+• `/agent <id>` - Set your preferred agent for this chat
 
 **Examples:**
-• `/agent` - Shows your current agent ID
+• `/agent` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
 
-**Note:** Agent ID changes are temporary for this session. For permanent changes, update your Modal secrets.
+**Note:** Agent selections are saved permanently for each chat and persist across deployments.
 """
     send_telegram_message(chat_id, help_text)
 

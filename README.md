@@ -23,6 +23,8 @@ From an agent running on Telegram for a while:
 This bot creates a bridge between Telegram and [Letta](https://letta.com) (formerly MemGPT), allowing you to:
 - Chat with stateful AI agents through Telegram
 - Maintain conversation history and context across sessions
+- **Switch between different agents per chat** using the `/agent` command
+- **Persistent agent preferences** that survive deployments
 - Deploy scalably on Modal's serverless infrastructure
 - Handle both user-initiated and agent-initiated messages
 
@@ -46,9 +48,10 @@ modal setup
 
 ### 2. Set Up Your Letta Agent
 
-First, create and configure a Letta agent:
-1. Visit [Letta's platform](https://letta.com) and create an agent
-2. Note your API key, agent ID, and API URL
+First, create and configure Letta agents:
+1. Visit [Letta's platform](https://letta.com) and create one or more agents
+2. Note your API key and API URL
+3. Agent IDs will be discovered automatically by the bot
 
 ### 3. Configure Modal Secrets
 
@@ -65,8 +68,7 @@ modal secret create telegram-bot \
 # Letta API credentials  
 modal secret create letta-api \
   LETTA_API_KEY=your_letta_api_key \
-  LETTA_API_URL=https://api.letta.com \
-  LETTA_AGENT_ID=your_agent_id
+  LETTA_API_URL=https://api.letta.com
 
 # If you have them in environment variables, you can use the following command:
 modal secret create telegram-bot \
@@ -75,8 +77,7 @@ modal secret create telegram-bot \
 
 modal secret create letta-api \
   LETTA_API_KEY=$LETTA_API_KEY \
-  LETTA_API_URL=$LETTA_API_URL \
-  LETTA_AGENT_ID=$LETTA_AGENT_ID
+  LETTA_API_URL=$LETTA_API_URL
 
 ```
 
@@ -111,7 +112,6 @@ Your credentials are stored as Modal secrets:
 **`letta-api` secret:**
 - `LETTA_API_KEY`: Your Letta API authentication key
 - `LETTA_API_URL`: API endpoint (default: `https://api.letta.com`)
-- `LETTA_AGENT_ID`: Unique ID of your Letta agent
 
 ### Message Flow
 
@@ -146,10 +146,39 @@ This creates temporary endpoints you can use for testing.
 ### Key Features
 
 - **Real-time Streaming**: Messages stream from Letta agents in real-time
+- **Agent Management**: Switch between different agents per chat with persistent storage
 - **Error Handling**: Automatic retries with exponential backoff for 500 errors
 - **Message Formatting**: Automatic conversion to Telegram MarkdownV2 format
 - **Tool Visualization**: Shows when agents use tools like web search
 - **Long Message Support**: Handles messages up to Telegram's 4,096 character limit
+
+## 🤖 Agent Management
+
+### Commands
+
+- **`/agent`** - List all available agents and show current selection
+- **`/agent <id>`** - Set your preferred agent for this chat
+- **`/help`** - Show available commands
+
+### How It Works
+
+1. **Persistent Storage**: Agent selections are stored using Modal Volumes, ensuring preferences persist across deployments
+2. **Per-Chat Settings**: Each chat (individual or group) can have its own agent selection
+3. **Automatic Discovery**: The bot automatically lists all agents from your Letta account
+4. **Validation**: Agent IDs are validated against your Letta account before saving
+5. **Fallback**: If no agent is selected for a chat, the system falls back to the `LETTA_AGENT_ID` environment variable (if set)
+
+### Storage Structure
+
+```
+/data/chats/
+├── {chat_id_1}/
+│   └── agent.json    # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
+├── {chat_id_2}/
+│   └── agent.json
+```
+
+This structure is designed to be extensible for future per-chat settings.
 
 ### Message Processing Features
 
