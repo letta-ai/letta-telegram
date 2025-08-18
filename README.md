@@ -67,6 +67,17 @@ modal secret create letta-api \
   LETTA_API_KEY=your_letta_api_key \
   LETTA_API_URL=https://api.letta.com \
   LETTA_AGENT_ID=your_agent_id
+
+# If you have them in environment variables, you can use the following command:
+modal secret create telegram-bot \
+  TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
+  TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET
+
+modal secret create letta-api \
+  LETTA_API_KEY=$LETTA_API_KEY \
+  LETTA_API_URL=$LETTA_API_URL \
+  LETTA_AGENT_ID=$LETTA_AGENT_ID
+
 ```
 
 ### 4. Deploy to Modal

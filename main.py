@@ -6,8 +6,8 @@ from typing import Dict, Any
 import modal
 
 
-image = modal.Image.debian_slim(python_version="3.12").pip_install([
-    "fastapi[standard]",
+image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": "1"}).pip_install([
+    "fastapi",
     "requests",
     "pydantic>=2.0",
     "telegramify-markdown",
@@ -21,7 +21,7 @@ app = modal.App("letta-telegram-bot", image=image)
     secrets=[
         modal.Secret.from_name("telegram-bot"),  
         modal.Secret.from_name("letta-api")
-    ]
+    ],
 )
 def process_message_async(update: dict):
     """
@@ -29,7 +29,7 @@ def process_message_async(update: dict):
     """
     import time
     from letta_client import Letta
-
+    from letta_client.core.api_error import ApiError
 
     print(f"Background processing update: {update}")
     
@@ -94,6 +94,8 @@ def process_message_async(update: dict):
             
             for event in response_stream:
                 current_time = time.time()
+                # print(f"Received event {event.id} | {event.message_type:<20} | {event.date}")
+                # print(f"Event: {event}")
                 
                 # Check for overall timeout
                 if current_time - start_time > timeout_seconds:
@@ -105,7 +107,7 @@ def process_message_async(update: dict):
                     send_telegram_typing(chat_id)
                     last_activity = current_time
                 
-                print(f"Processing event: {event}")
+                # print(f"Processing event: {event}")
                 try:
                     if hasattr(event, 'message_type'):
                         message_type = event.message_type
@@ -157,16 +159,92 @@ def process_message_async(update: dict):
                     print(f"⚠️  Error processing stream event: {e}")
                     continue
             
+        except ApiError as e:
+            # Handle Letta API-specific errors with detailed information
+            error_details = {
+                'status_code': getattr(e, 'status_code', 'unknown'),
+                'body': getattr(e, 'body', 'no body available'),
+                'type': type(e).__name__
+            }
+            
+            # Log detailed error information
+            print(f"⚠️  Letta API Error:")
+            print(f"    Status Code: {error_details['status_code']}")
+            print(f"    Body: {error_details['body']}")
+            print(f"    Exception Type: {error_details['type']}")
+            
+            # Parse error body if it's JSON to extract meaningful message
+            user_error_msg = "Error communicating with Letta"
+            try:
+                if isinstance(error_details['body'], str):
+                    error_body = json.loads(error_details['body'])
+                    if 'detail' in error_body:
+                        user_error_msg = f"Letta Error: {error_body['detail']}"
+                    elif 'message' in error_body:
+                        user_error_msg = f"Letta Error: {error_body['message']}"
+                    elif 'error' in error_body:
+                        user_error_msg = f"Letta Error: {error_body['error']}"
+                    else:
+                        user_error_msg = f"Letta Error (HTTP {error_details['status_code']}): {error_details['body'][:200]}"
+                else:
+                    user_error_msg = f"Letta Error (HTTP {error_details['status_code']}): {error_details['body']}"
+            except (json.JSONDecodeError, TypeError):
+                user_error_msg = f"Letta Error (HTTP {error_details['status_code']}): Server returned an error"
+            
+            send_telegram_message(chat_id, f"❌ {user_error_msg}")
+            
+            # Re-raise the exception to preserve call stack in logs
+            raise
+            
         except Exception as e:
-            error_msg = f"Error communicating with Letta: {str(e)}"
-            print(f"⚠️  {error_msg}")
-            send_telegram_message(chat_id, f"❌ {error_msg}")
+            # Handle other exceptions with enhanced debugging
+            error_info = {
+                'type': type(e).__name__,
+                'message': str(e),
+                'attributes': {}
+            }
+            
+            # Try to extract additional error attributes
+            for attr in ['response', 'status_code', 'text', 'content', 'body', 'detail']:
+                if hasattr(e, attr):
+                    try:
+                        attr_value = getattr(e, attr)
+                        if callable(attr_value):
+                            continue  # Skip methods
+                        error_info['attributes'][attr] = str(attr_value)[:500]  # Limit length
+                    except Exception:
+                        error_info['attributes'][attr] = 'unable to access'
+            
+            # Log comprehensive error information
+            print(f"⚠️  Non-API Error:")
+            print(f"    Type: {error_info['type']}")
+            print(f"    Message: {error_info['message']}")
+            if error_info['attributes']:
+                print(f"    Additional attributes:")
+                for attr, value in error_info['attributes'].items():
+                    print(f"      {attr}: {value}")
+            
+            # Check if this looks like an HTTP error with response body
+            if 'response' in error_info['attributes']:
+                user_error_msg = f"Connection error: {error_info['message']}"
+            elif 'status_code' in error_info['attributes']:
+                user_error_msg = f"HTTP Error {error_info['attributes']['status_code']}: {error_info['message']}"
+            else:
+                user_error_msg = f"Error communicating with Letta: {error_info['message']}"
+            
+            send_telegram_message(chat_id, f"❌ {user_error_msg}")
+            
+            # Re-raise the exception to preserve call stack in logs
+            raise
         
     except Exception as e:
         error_msg = f"Error in background processing: {str(e)}"
         print(f"⚠️  {error_msg}")
         if 'chat_id' in locals():
             send_telegram_message(chat_id, f"❌ {error_msg}")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 @app.function(
     image=image,
@@ -207,6 +285,9 @@ def telegram_webhook(update: dict):
             
     except Exception as e:
         print(f"Error in webhook handler: {str(e)}")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
     
     # Always return OK to Telegram quickly
     return {"ok": True}
@@ -255,6 +336,9 @@ def handle_agent_command(message: str, _user_name: str, chat_id: str):
     except Exception as e:
         print(f"Error handling agent command: {str(e)}")
         send_telegram_message(chat_id, "❌ Error processing agent command. Please try again.")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 def update_agent_id(new_agent_id: str) -> bool:
     """
@@ -318,6 +402,9 @@ def send_telegram_typing(chat_id: str):
     
     except Exception as e:
         print(f"Error sending typing indicator: {str(e)}")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 def convert_to_telegram_markdown(text: str) -> str:
     """
@@ -381,6 +468,9 @@ def send_telegram_message(chat_id: str, text: str):
     
     except Exception as e:
         print(f"Error sending Telegram message: {str(e)}")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 @app.function(image=image, secrets=[modal.Secret.from_name("telegram-bot")])
 @modal.fastapi_endpoint(method="GET")
@@ -406,5 +496,5 @@ def send_proactive_message(chat_id: str, message: str):
     return {"status": "sent", "chat_id": chat_id}
 
 if __name__ == "__main__":
-    # For local development
+    # Run this section with `modal run main.py`
     print("Letta-Telegram bot is ready to deploy!")
