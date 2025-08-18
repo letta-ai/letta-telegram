@@ -147,12 +147,46 @@ def process_message_async(update: dict):
                                     if tool_name == "archival_memory_insert":
                                         tool_msg = "**Remembered**"
                                         tool_msg += f"\n{blockquote_message(args_obj['content'])}"
+
                                     elif tool_name == "archival_memory_search":
                                         tool_msg = f"**Remembering** `{args_obj['query']}`"
+
+                                    #
+                                    # Memory modification operations
+                                    #
+                                    # {
+                                    # "label": "research_report",
+                                    # "insert_line": 0,
+                                    # "new_str": "# Telegram Messaging Platform: A ...",
+                                    # "request_heartbeat": true
+                                    # }
+
+                                    elif tool_name == "memory_insert":
+                                        block_label = args_obj['label']
+                                        insert_line = args_obj['insert_line']
+                                        new_str = args_obj['new_str']
+                                        tool_msg = f"**Inserting into `{block_label}`**\n\n"
+                                        tool_msg += f"\n{blockquote_message(new_str)}"
+
+                                    # {
+                                    #     "label": "human",
+                                    #     "old_str": "This is my section of core memory devoted to information about the human.",
+                                    #     "new_str": "The user (cpfiffer, chat_id: 515978553) is communicating via Telegram and has requested a comprehensive research report on Telegram messaging platform. This is our first interaction.",
+                                    #     "request_heartbeat": true
+                                    # }
+                                    elif tool_name == "memory_replace":
+                                        block_label = args_obj['label']
+                                        old_str = args_obj['old_str']
+                                        new_str = args_obj['new_str']
+                                        tool_msg = f"**Modifying memory block `{block_label}`**\n\n"
+                                        tool_msg += f"**New:**\n{blockquote_message(new_str)}"
+                                        tool_msg += f"**Old:**\n{blockquote_message(old_str)}\n\n"
+
                                     else:
                                         tool_msg = f"🔧 Using tool: {tool_name}"
                                         formatted_args = json.dumps(args_obj, indent=2)
                                         tool_msg += f"\n```json\n{formatted_args}\n```"
+
                                 except Exception as e:
                                     print(f"Error parsing tool arguments: {e}")
                                     tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
@@ -280,6 +314,9 @@ def telegram_webhook(update: dict):
                 return {"ok": True}
             elif message_text.startswith('/help'):
                 handle_help_command(chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/ade'):
+                handle_ade_command(chat_id)
                 return {"ok": True}
             
             # Send immediate feedback
@@ -473,14 +510,62 @@ def handle_help_command(chat_id: str):
 • `/help` - Show this help message
 • `/agent` - List all available agents and show current selection
 • `/agent <id>` - Set your preferred agent for this chat
+• `/ade` - Get link to current agent in the agent development environment (ADE)
 
 **Examples:**
 • `/agent` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
+• `/ade` - Shows link to current agent in the ADE
 
 **Note:** Agent selections are saved permanently for each chat and persist across deployments.
 """
     send_telegram_message(chat_id, help_text)
+
+def handle_ade_command(chat_id: str):
+    """
+    Handle /ade command to provide Letta agent web interface link
+    """
+    try:
+        # Get current agent for this chat
+        current_agent_id = get_chat_agent(chat_id)
+        
+        if not current_agent_id:
+            send_telegram_message(chat_id, "❌ No agent configured. Use `/agent <id>` to set an agent first.")
+            return
+        
+        # Try to get agent details to show name
+        agent_name = "Unknown"
+        try:
+            from letta_client import Letta
+            
+            letta_api_key = os.environ.get("LETTA_API_KEY")
+            letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+            
+            if letta_api_key:
+                client = Letta(token=letta_api_key, base_url=letta_api_url)
+                agent = client.agents.retrieve(agent_id=current_agent_id)
+                agent_name = agent.name
+        except Exception as e:
+            print(f"Warning: Could not retrieve agent name: {e}")
+        
+        # Build the response with the Letta web interface link
+        response = f"""🔗 **Agent Web Interface**
+
+**Agent:** {agent_name} ({current_agent_id})
+
+**Agent Development Environment (ADE):**
+https://app.letta.com/agents/{current_agent_id}
+
+Click the link above to access your agent in the ADE."""
+        
+        send_telegram_message(chat_id, response)
+        
+    except Exception as e:
+        print(f"Error handling ade command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error getting agent link. Please try again.")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 
 def send_telegram_typing(chat_id: str):
