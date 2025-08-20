@@ -1,7 +1,5 @@
 import os
 import json
-import requests
-import telegramify_markdown
 from typing import Dict, Any
 from datetime import datetime
 import modal
@@ -12,7 +10,8 @@ image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": 
     "requests",
     "pydantic>=2.0",
     "telegramify-markdown",
-    "letta_client"
+    "letta_client",
+    "cryptography"
 ])
 
 app = modal.App("letta-telegram-bot", image=image)
@@ -20,11 +19,141 @@ app = modal.App("letta-telegram-bot", image=image)
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
 
+def get_encryption_key() -> bytes:
+    """
+    Get or generate the encryption key from Modal secrets
+    """
+    import base64
+    from cryptography.fernet import Fernet
+    
+    # This should be stored in Modal secrets
+    # For now, we'll use the bot token as a seed (not ideal but works)
+    # In production, this should be a separate secret
+    encryption_secret = os.environ.get("ENCRYPTION_KEY")
+    if encryption_secret:
+        return base64.urlsafe_b64encode(encryption_secret.encode()[:32].ljust(32, b'0'))
+    else:
+        # Fallback: generate from bot token (not recommended for production)
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        return base64.urlsafe_b64encode(bot_token.encode()[:32].ljust(32, b'0'))
+
+def encrypt_api_key(api_key: str) -> str:
+    """
+    Encrypt an API key for storage
+    """
+    from cryptography.fernet import Fernet
+    
+    key = get_encryption_key()
+    f = Fernet(key)
+    encrypted = f.encrypt(api_key.encode())
+    return encrypted.decode()
+
+def decrypt_api_key(encrypted_key: str) -> str:
+    """
+    Decrypt an API key from storage
+    """
+    from cryptography.fernet import Fernet
+    
+    key = get_encryption_key()
+    f = Fernet(key)
+    decrypted = f.decrypt(encrypted_key.encode())
+    return decrypted.decode()
+
+def store_user_credentials(user_id: str, api_key: str, api_url: str = "https://api.letta.com") -> bool:
+    """
+    Store encrypted user credentials in volume
+    """
+    try:
+        user_dir = f"/data/users/{user_id}"
+        os.makedirs(user_dir, exist_ok=True)
+        
+        encrypted_key = encrypt_api_key(api_key)
+        
+        credentials = {
+            "api_key": encrypted_key,
+            "api_url": api_url,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        credentials_path = f"{user_dir}/credentials.json"
+        with open(credentials_path, "w") as f:
+            json.dump(credentials, f, indent=2)
+        
+        # Commit changes to persist them
+        volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error storing user credentials for {user_id}: {e}")
+        return False
+
+def get_user_credentials(user_id: str) -> Dict[str, str]:
+    """
+    Get user credentials from volume
+    Returns dict with 'api_key' and 'api_url', or None if not found
+    """
+    try:
+        credentials_path = f"/data/users/{user_id}/credentials.json"
+        if not os.path.exists(credentials_path):
+            return None
+        
+        with open(credentials_path, "r") as f:
+            credentials = json.load(f)
+        
+        # Decrypt the API key
+        decrypted_key = decrypt_api_key(credentials["api_key"])
+        
+        return {
+            "api_key": decrypted_key,
+            "api_url": credentials.get("api_url", "https://api.letta.com")
+        }
+        
+    except Exception as e:
+        print(f"Error retrieving user credentials for {user_id}: {e}")
+        return None
+
+def delete_user_credentials(user_id: str) -> bool:
+    """
+    Delete user credentials from volume
+    """
+    try:
+        credentials_path = f"/data/users/{user_id}/credentials.json"
+        if os.path.exists(credentials_path):
+            os.remove(credentials_path)
+            volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting user credentials for {user_id}: {e}")
+        return False
+
+def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com") -> tuple[bool, str]:
+    """
+    Validate a Letta API key by attempting to list agents
+    Returns (is_valid, error_message)
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        client = Letta(token=api_key, base_url=api_url)
+        # Try to list agents to validate the API key
+        agents = client.agents.list()
+        return True, f"Successfully authenticated. Found {len(agents)} agents."
+        
+    except ApiError as e:
+        if hasattr(e, 'status_code') and e.status_code == 401:
+            return False, "Invalid API key"
+        else:
+            return False, f"API error: {str(e)}"
+    except Exception as e:
+        return False, f"Connection error: {str(e)}"
+
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("telegram-bot"),  
-        modal.Secret.from_name("letta-api")
+        modal.Secret.from_name("telegram-bot")
     ],
     volumes={"/data": volume}
 )
@@ -45,21 +174,27 @@ def process_message_async(update: dict):
             
         message_text = update["message"]["text"]
         chat_id = str(update["message"]["chat"]["id"])
+        user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
-        print(f"Processing message: {message_text} from {user_name} in chat {chat_id}")
+        print(f"Processing message: {message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
 
-        # Process regular messages with Letta streaming
-        print("Loading Letta client")
-        letta_api_key = os.environ.get("LETTA_API_KEY")
-        letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+        # Check for user-specific credentials
+        user_credentials = get_user_credentials(user_id)
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nPlease authenticate to use this bot:\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate\n\nExample: `/login sk-123456789`")
+            return
+        
+        # Use user-specific credentials
+        print(f"Using user-specific credentials for user {user_id}")
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Get agent ID for this chat
         agent_id = get_chat_agent(chat_id)
         
-        if not letta_api_key:
-            send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
-            return
-            
         if not agent_id:
-            send_telegram_message(chat_id, "❌ Configuration error: No agent configured. Use `/agent <id>` to set an agent.")
+            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agent` to see available agents and `/agent <id>` to select one.")
             return
         
         # Initialize Letta client
@@ -288,8 +423,7 @@ def process_message_async(update: dict):
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("telegram-bot"),  
-        modal.Secret.from_name("letta-api")
+        modal.Secret.from_name("telegram-bot")
     ],
     volumes={"/data": volume}
 )
@@ -310,13 +444,22 @@ def telegram_webhook(update: dict):
 
             # Handle commands synchronously (they're fast)
             if message_text.startswith('/agent'):
-                handle_agent_command(message_text, user_name, chat_id)
+                handle_agent_command(message_text, update, chat_id)
                 return {"ok": True}
             elif message_text.startswith('/help'):
                 handle_help_command(chat_id)
                 return {"ok": True}
             elif message_text.startswith('/ade'):
                 handle_ade_command(chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/login'):
+                handle_login_command(message_text, update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/logout'):
+                handle_logout_command(update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/status'):
+                handle_status_command(update, chat_id)
                 return {"ok": True}
             
             # Send immediate feedback
@@ -386,13 +529,169 @@ def blockquote_message(message: str) -> str:
     """
     return "\n".join([f"> {line}" for line in message.split("\n")])
 
-def handle_agent_command(message: str, _user_name: str, chat_id: str):
+def handle_login_command(message_text: str, update: dict, chat_id: str):
+    """
+    Handle /login command to store user's Letta API key
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        message_id = update["message"]["message_id"]
+        
+        # Delete the message containing the API key immediately for security
+        try:
+            bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+            if bot_token:
+                delete_url = f"https://api.telegram.org/bot{bot_token}/deleteMessage"
+                delete_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id
+                }
+                import requests
+                requests.post(delete_url, data=delete_payload, timeout=5)
+        except Exception as e:
+            print(f"Warning: Could not delete message with API key: {e}")
+        
+        # Parse the command: /login <api_key> [api_url]
+        parts = message_text.strip().split()
+        
+        if len(parts) < 2:
+            send_telegram_message(chat_id, "❌ Usage: `/login <api_key>` or `/login <api_key> <api_url>`\n\nExample: `/login sk-123456789`\n\nYour API key can be found at https://app.letta.com")
+            return
+        
+        api_key = parts[1].strip()
+        api_url = parts[2].strip() if len(parts) > 2 else "https://api.letta.com"
+        
+        # Validate the API key
+        send_telegram_typing(chat_id)
+        is_valid, validation_message = validate_letta_api_key(api_key, api_url)
+        
+        if not is_valid:
+            send_telegram_message(chat_id, f"❌ {validation_message}\n\nPlease check your API key and try again.")
+            return
+        
+        # Store the credentials
+        success = store_user_credentials(user_id, api_key, api_url)
+        
+        if success:
+            response = f"✅ **Authentication Successful!**\n\n"
+            response += f"User: @{user_name}\n"
+            response += f"{validation_message}\n\n"
+            response += "You can now:\n"
+            response += "• Chat with your Letta agents\n"
+            response += "• Use `/agent` to select an agent\n"
+            response += "• Use `/status` to check your authentication status\n"
+            response += "• Use `/logout` to remove your credentials"
+            
+            send_telegram_message(chat_id, response)
+        else:
+            send_telegram_message(chat_id, "❌ Failed to store credentials. Please try again.")
+            
+    except Exception as e:
+        print(f"Error handling login command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing login command. Please try again.")
+
+def handle_logout_command(update: dict, chat_id: str):
+    """
+    Handle /logout command to remove user's stored credentials
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check if user has credentials
+        credentials = get_user_credentials(user_id)
+        
+        if not credentials:
+            send_telegram_message(chat_id, "❌ You are not logged in. Use `/login <api_key>` to authenticate.")
+            return
+        
+        # Delete the credentials
+        success = delete_user_credentials(user_id)
+        
+        if success:
+            response = f"✅ **Logged Out Successfully**\n\n"
+            response += f"User @{user_name}, your credentials have been removed.\n"
+            response += "Use `/login <api_key>` to authenticate again."
+            send_telegram_message(chat_id, response)
+        else:
+            send_telegram_message(chat_id, "❌ Failed to remove credentials. Please try again.")
+            
+    except Exception as e:
+        print(f"Error handling logout command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing logout command. Please try again.")
+
+def handle_status_command(update: dict, chat_id: str):
+    """
+    Handle /status command to check authentication status
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check if user has credentials
+        credentials = get_user_credentials(user_id)
+        
+        if not credentials:
+            response = "🔐 **Authentication Status**\n\n"
+            response += f"User: @{user_name}\n"
+            response += "Status: **Not Authenticated** ❌\n\n"
+            response += "Use `/login <api_key>` to authenticate.\n"
+            response += "Get your API key at https://app.letta.com"
+            send_telegram_message(chat_id, response)
+            return
+        
+        # Validate the stored credentials
+        send_telegram_typing(chat_id)
+        is_valid, validation_message = validate_letta_api_key(
+            credentials["api_key"], 
+            credentials["api_url"]
+        )
+        
+        response = "🔐 **Authentication Status**\n\n"
+        response += f"User: @{user_name}\n"
+        
+        if is_valid:
+            response += "Status: **Authenticated** ✅\n"
+            response += f"API URL: {credentials['api_url']}\n"
+            response += f"{validation_message}\n\n"
+            response += "Use `/agent` to select an agent."
+        else:
+            response += "Status: **Invalid Credentials** ❌\n"
+            response += f"Error: {validation_message}\n\n"
+            response += "Please use `/login <api_key>` to update your credentials."
+        
+        send_telegram_message(chat_id, response)
+        
+    except Exception as e:
+        print(f"Error handling status command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error checking authentication status. Please try again.")
+
+def handle_agent_command(message: str, update: dict, chat_id: str):
     """
     Handle /agent command to list available agents or set agent ID
     """
     try:
         from letta_client import Letta
         from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        user_credentials = get_user_credentials(user_id)
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nPlease authenticate to use this bot:\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
         
         # Parse the command: /agent [agent_id]
         parts = message.strip().split()
@@ -401,13 +700,6 @@ def handle_agent_command(message: str, _user_name: str, chat_id: str):
             # List available agents and show current selection
             try:
                 # Initialize Letta client to list agents
-                letta_api_key = os.environ.get("LETTA_API_KEY")
-                letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
-                
-                if not letta_api_key:
-                    send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
-                    return
-                
                 client = Letta(token=letta_api_key, base_url=letta_api_url)
                 
                 # Get current agent for this chat
@@ -467,13 +759,7 @@ def handle_agent_command(message: str, _user_name: str, chat_id: str):
         
         # Validate that the agent exists
         try:
-            letta_api_key = os.environ.get("LETTA_API_KEY")
-            letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
-            
-            if not letta_api_key:
-                send_telegram_message(chat_id, "❌ Configuration error: Missing LETTA_API_KEY")
-                return
-            
+            # Use the already obtained credentials from above
             client = Letta(token=letta_api_key, base_url=letta_api_url)
             agent = client.agents.retrieve(agent_id=new_agent_id)
             
@@ -506,18 +792,31 @@ def handle_help_command(chat_id: str):
     """
     help_text = """🤖 **Letta Telegram Bot Commands**
 
-**Available Commands:**
-• `/help` - Show this help message
+**Authentication Commands:**
+• `/login <api_key>` - Authenticate with your Letta API key
+• `/logout` - Remove your stored credentials
+• `/status` - Check your authentication status
+
+**Agent Commands:**
 • `/agent` - List all available agents and show current selection
 • `/agent <id>` - Set your preferred agent for this chat
 • `/ade` - Get link to current agent in the agent development environment (ADE)
 
+**Other Commands:**
+• `/help` - Show this help message
+
+**Getting Started:**
+1. Get your API key from https://app.letta.com
+2. Use `/login <api_key>` to authenticate
+3. Use `/agent` to select an agent
+4. Start chatting!
+
 **Examples:**
+• `/login sk-123456789` - Authenticate with your API key
 • `/agent` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
-• `/ade` - Shows link to current agent in the ADE
 
-**Note:** Agent selections are saved permanently for each chat and persist across deployments.
+**Note:** Your credentials and agent selections are saved securely and persist across sessions.
 """
     send_telegram_message(chat_id, help_text)
 
@@ -584,6 +883,7 @@ def send_telegram_typing(chat_id: str):
             "action": "typing"
         }
         
+        import requests
         response = requests.post(url, data=payload, timeout=10)
         if response.status_code != 200:
             error_msg = f"Telegram API error sending typing: {response.status_code} - {response.text}"
@@ -602,6 +902,7 @@ def convert_to_telegram_markdown(text: str) -> str:
     """
     try:
         # Use telegramify-markdown to handle proper escaping and conversion
+        import telegramify_markdown
         telegram_text = telegramify_markdown.markdownify(text)
         return telegram_text
     except Exception as e:
@@ -650,6 +951,7 @@ def send_telegram_message(chat_id: str, text: str):
             "parse_mode": "MarkdownV2"
         }
         
+        import requests
         response = requests.post(url, data=payload, timeout=10)
         if response.status_code != 200:
             error_msg = f"Telegram API error: {response.status_code} - {response.text}"
@@ -673,8 +975,7 @@ def health_check():
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("telegram-bot"),
-        modal.Secret.from_name("letta-api")
+        modal.Secret.from_name("telegram-bot")
     ]
 )
 def send_proactive_message(chat_id: str, message: str):
