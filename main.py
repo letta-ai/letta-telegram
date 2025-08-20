@@ -142,6 +142,103 @@ def delete_user_credentials(user_id: str) -> bool:
         # Re-raise the exception so it gets tracked by infrastructure
         raise
 
+def save_user_shortcut(user_id: str, shortcut_name: str, agent_id: str, agent_name: str) -> bool:
+    """
+    Save a user shortcut for quick agent switching
+    """
+    try:
+        user_dir = f"/data/users/{user_id}"
+        os.makedirs(user_dir, exist_ok=True)
+        
+        shortcuts_path = f"{user_dir}/shortcuts.json"
+        
+        # Load existing shortcuts
+        shortcuts = {}
+        if os.path.exists(shortcuts_path):
+            with open(shortcuts_path, "r") as f:
+                shortcuts = json.load(f)
+        
+        # Add/update shortcut
+        shortcuts[shortcut_name.lower()] = {
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Save shortcuts
+        with open(shortcuts_path, "w") as f:
+            json.dump(shortcuts, f, indent=2)
+        
+        # Commit changes to persist them
+        volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error saving shortcut for user {user_id}: {e}")
+        raise
+
+def get_user_shortcuts(user_id: str) -> Dict[str, Any]:
+    """
+    Get all user shortcuts
+    Returns dict of shortcut_name -> shortcut_data, or empty dict if none found
+    """
+    try:
+        shortcuts_path = f"/data/users/{user_id}/shortcuts.json"
+        if not os.path.exists(shortcuts_path):
+            return {}
+        
+        with open(shortcuts_path, "r") as f:
+            return json.load(f)
+        
+    except Exception as e:
+        print(f"Error retrieving shortcuts for user {user_id}: {e}")
+        raise
+
+def get_shortcut_by_name(user_id: str, shortcut_name: str) -> Dict[str, Any]:
+    """
+    Get a specific shortcut by name
+    Returns shortcut data dict or None if not found
+    """
+    try:
+        shortcuts = get_user_shortcuts(user_id)
+        return shortcuts.get(shortcut_name.lower())
+        
+    except Exception as e:
+        print(f"Error retrieving shortcut '{shortcut_name}' for user {user_id}: {e}")
+        raise
+
+def delete_user_shortcut(user_id: str, shortcut_name: str) -> bool:
+    """
+    Delete a user shortcut
+    Returns True if deleted, False if shortcut didn't exist
+    """
+    try:
+        shortcuts_path = f"/data/users/{user_id}/shortcuts.json"
+        if not os.path.exists(shortcuts_path):
+            return False
+        
+        with open(shortcuts_path, "r") as f:
+            shortcuts = json.load(f)
+        
+        shortcut_key = shortcut_name.lower()
+        if shortcut_key not in shortcuts:
+            return False
+        
+        del shortcuts[shortcut_key]
+        
+        # Save updated shortcuts
+        with open(shortcuts_path, "w") as f:
+            json.dump(shortcuts, f, indent=2)
+        
+        # Commit changes to persist them
+        volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting shortcut '{shortcut_name}' for user {user_id}: {e}")
+        raise
+
 def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com") -> tuple[bool, str]:
     """
     Validate a Letta API key by attempting to list agents
@@ -463,7 +560,10 @@ def telegram_webhook(update: dict):
             print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
 
             # Handle commands synchronously (they're fast)
-            if message_text.startswith('/agent'):
+            if message_text.startswith('/agents'):
+                handle_agents_command(update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/agent'):
                 handle_agent_command(message_text, update, chat_id)
                 return {"ok": True}
             elif message_text.startswith('/help'):
@@ -483,6 +583,15 @@ def telegram_webhook(update: dict):
                 return {"ok": True}
             elif message_text.startswith('/start'):
                 handle_start_command(update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/tool'):
+                handle_tool_command(message_text, update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/shortcut'):
+                handle_shortcut_command(message_text, update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/switch'):
+                handle_switch_command(message_text, update, chat_id)
                 return {"ok": True}
             
             # Send immediate feedback
@@ -735,7 +844,10 @@ def handle_start_command(update: dict, chat_id: str):
             response = f"👋 **Welcome back, {first_name}!**\n\n"
             response += "You're already authenticated and ready to go!\n\n"
             response += "**Quick Actions:**\n"
-            response += "• `/agent` - View and select your agents\n"
+            response += "• `/agent` - View current agent info\n"
+            response += "• `/agents` - List and select agents\n"
+            response += "• `/tool` - Manage your agent's tools\n"
+            response += "• `/shortcut` - Manage agent shortcuts for quick switching\n"
             response += "• `/status` - Check your authentication status\n"
             response += "• `/help` - See all available commands\n\n"
             response += "Just type a message to start chatting with your agent!"
@@ -757,10 +869,15 @@ def handle_start_command(update: dict, chat_id: str):
             
             response += "**Step 3: Select an Agent** 🤖\n"
             response += "After logging in:\n"
-            response += "• Use `/agent` to see your available agents\n"
+            response += "• Use `/agents` to see your available agents\n"
             response += "• Use `/agent <agent_id>` to select one\n\n"
             
-            response += "**Step 4: Start Chatting!** 💬\n"
+            response += "**Step 4: Customize Your Agent (Optional)** 🔧\n"
+            response += "• Use `/tool` to see and manage available tools\n"
+            response += "• Use `/shortcut <name> <agent_id>` to create shortcuts for quick switching\n"
+            response += "• Use `/switch <name>` to quickly switch between agents\n\n"
+            
+            response += "**Step 5: Start Chatting!** 💬\n"
             response += "Once you've selected an agent, just send any message to start a conversation.\n\n"
             
             response += "**Need Help?**\n"
@@ -813,57 +930,58 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         parts = message.strip().split()
         
         if len(parts) == 1:
-            # List available agents and show current selection
+            # Show current agent info
             try:
-                # Initialize Letta client to list agents
-                client = Letta(token=letta_api_key, base_url=letta_api_url)
-                
                 # Get current agent for this chat
                 current_agent_id = get_chat_agent(chat_id)
-                current_agent_name = "Unknown"
                 
-                # Try to get current agent details
-                if current_agent_id:
-                    try:
-                        current_agent = client.agents.retrieve(agent_id=current_agent_id)
-                        current_agent_name = current_agent.name
-                    except:
-                        pass
-                
-                # List all available agents
-                agents = client.agents.list()
-                
-                if not agents:
-                    send_telegram_message(chat_id, "❌ No agents available. Create an agent first.")
+                if not current_agent_id:
+                    send_telegram_message(chat_id, "**Current Agent:** None set\n\nUse `/agents` to see available agents and `/agent <agent_id>` to select one.")
                     return
                 
-                # Build response message
-                response = "🤖 **Available Agents**\n\n"
+                # Initialize Letta client to get agent details
+                client = Letta(token=letta_api_key, base_url=letta_api_url)
                 
-                if current_agent_id:
-                    response += f"**Current Agent:** `{current_agent_id}` ({current_agent_name})\n\n"
-                else:
-                    response += "**Current Agent:** None set\n\n"
+                # Get current agent details
+                try:
+                    current_agent = client.agents.retrieve(agent_id=current_agent_id)
+                    agent_name = current_agent.name
+                    agent_description = getattr(current_agent, 'description', None) or getattr(current_agent, 'system', '')
+                    
+                    # Get attached tools count
+                    try:
+                        attached_tools = client.agents.tools.list(agent_id=current_agent_id)
+                        tools_count = len(attached_tools)
+                    except:
+                        tools_count = "Unknown"
+                    
+                    # Build response message
+                    response = f"**Current Agent:** {agent_name}\n\n"
+                    response += f"**ID:** `{current_agent_id}`\n"
+                    if agent_description:
+                        response += f"**Description:** {agent_description}\n"
+                    response += f"**Attached Tools:** {tools_count}\n\n"
+                    response += "**Usage:**\n"
+                    response += "• `/agents` - List all available agents\n"
+                    response += "• `/agent <agent_id>` - Switch to different agent"
+                    
+                    send_telegram_message(chat_id, response)
+                    return
+                    
+                except ApiError as e:
+                    if hasattr(e, 'status_code') and e.status_code == 404:
+                        send_telegram_message(chat_id, f"**Current Agent:** `{current_agent_id}` (Agent not found)\n\nUse `/agents` to see available agents.")
+                        return
+                    else:
+                        send_telegram_message(chat_id, f"❌ Error getting agent details: {e}")
+                        return
                 
-                response += "**Available Agents:**\n"
-                for agent in agents:
-                    status = "🟢" if agent.id == current_agent_id else "⚪"
-                    response += f"{status} `{agent.id}` - {agent.name}\n"
-                
-                response += f"\n**Usage:** `/agent <agent_id>` to select an agent"
-                
-                send_telegram_message(chat_id, response)
-                return
-                
-            except ApiError as e:
-                send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
-                return
             except Exception as e:
-                send_telegram_message(chat_id, f"❌ Error listing agents: {str(e)}")
+                send_telegram_message(chat_id, f"❌ Error getting current agent info: {str(e)}")
                 return
         
         if len(parts) != 2:
-            send_telegram_message(chat_id, "❌ Usage: `/agent [agent_id]`\n\nExamples:\n• `/agent` - List available agents\n• `/agent abc123` - Set agent ID")
+            send_telegram_message(chat_id, "❌ Usage: `/agent [agent_id]`\n\nExamples:\n• `/agent` - Show current agent info\n• `/agent abc123` - Switch to agent\n• `/agents` - List all available agents")
             return
         
         new_agent_id = parts[1].strip()
@@ -889,7 +1007,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
                 
         except ApiError as e:
             if hasattr(e, 'status_code') and e.status_code == 404:
-                send_telegram_message(chat_id, f"❌ Agent `{new_agent_id}` not found. Use `/agent` to see available agents.")
+                send_telegram_message(chat_id, f"❌ Agent `{new_agent_id}` not found. Use `/agents` to see available agents.")
             else:
                 send_telegram_message(chat_id, f"❌ Error validating agent: {e}")
         except Exception as e:
@@ -917,9 +1035,21 @@ def handle_help_command(chat_id: str):
 • `/status` - Check your authentication status
 
 **Agent Commands:**
-• `/agent` - List all available agents and show current selection
-• `/agent <id>` - Set your preferred agent for this chat
+• `/agent` - Show current agent information
+• `/agent <id>` - Switch to a specific agent
+• `/agents` - List all available agents
 • `/ade` - Get link to current agent in the agent development environment (ADE)
+
+**Tool Management:**
+• `/tool` or `/tool list` - List attached and available tools
+• `/tool attach <name>` - Attach a tool to your agent
+• `/tool detach <name>` - Detach a tool from your agent
+
+**Shortcuts:**
+• `/shortcut` - List your saved shortcuts
+• `/shortcut <name> <agent_id>` - Create shortcut for quick switching
+• `/shortcut delete <name>` - Delete a shortcut
+• `/switch <name>` - Quickly switch to agent using shortcut
 
 **Other Commands:**
 • `/help` - Show this help message
@@ -928,14 +1058,21 @@ def handle_help_command(chat_id: str):
 1. Use `/start` for a complete setup walkthrough
 2. Get your API key from https://app.letta.com
 3. Use `/login <api_key>` to authenticate
-4. Use `/agent` to select an agent
+4. Use `/agents` to see available agents, then `/agent <id>` to select one
 5. Start chatting!
 
 **Examples:**
 • `/start` - Get step-by-step setup instructions
 • `/login sk-123456789` - Authenticate with your API key
-• `/agent` - Lists all available agents with their IDs and names
+• `/agent` - Shows current agent information and details
+• `/agents` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
+• `/tool` - Shows all attached and available tools
+• `/tool attach calculator` - Attaches the calculator tool to your agent
+• `/tool detach web_search` - Removes the web_search tool from your agent
+• `/shortcut herald abc123` - Creates shortcut "herald" for agent abc123
+• `/switch herald` - Quickly switches to the agent saved as "herald"
+• `/shortcut delete herald` - Removes the "herald" shortcut
 
 **Note:** Your credentials and agent selections are saved securely and persist across sessions.
 """
@@ -985,6 +1122,639 @@ Click the link above to access your agent in the ADE."""
         send_telegram_message(chat_id, "❌ Error getting agent link. Please try again.")
         
         # Re-raise the exception to preserve call stack in logs
+        raise
+
+def handle_agents_command(update: dict, chat_id: str):
+    """
+    Handle /agents command to list all available agents with clean formatting
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        try:
+            # Initialize Letta client to list agents
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            
+            # Get current agent for this chat
+            current_agent_id = get_chat_agent(chat_id)
+            current_agent_name = "Unknown"
+            
+            # Try to get current agent details
+            if current_agent_id:
+                try:
+                    current_agent = client.agents.retrieve(agent_id=current_agent_id)
+                    current_agent_name = current_agent.name
+                except:
+                    pass
+            
+            # List all available agents
+            agents = client.agents.list()
+            
+            if not agents:
+                send_telegram_message(chat_id, "**Available Agents:**\n\nNo agents available. Create an agent first.")
+                return
+            
+            # Build clean response message
+            response = ""
+            
+            if current_agent_id:
+                response += f"**Current Agent:** {current_agent_name}\n"
+                response += f"```\n{current_agent_id}\n```\n"
+            else:
+                response += "**Current Agent:** None set\n\n"
+            
+            response += "**Available Agents:**\n```\n"
+            for agent in agents:
+                response += f"{agent.name}\n  {agent.id}\n\n"
+            response += "```\n"
+            
+            response += f"**Usage:** `/agent <agent_id>` to select an agent"
+            
+            send_telegram_message(chat_id, response)
+            return
+            
+        except ApiError as e:
+            send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
+            return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error listing agents: {str(e)}")
+            return
+    
+    except Exception as e:
+        print(f"Error handling agents command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing agents command. Please try again.")
+        
+        # Re-raise the exception to preserve call stack in logs
+        raise
+
+def handle_tool_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /tool command to list, attach, or detach tools
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Get agent ID for this chat
+        agent_id = get_chat_agent(chat_id)
+        
+        if not agent_id:
+            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agent` to see available agents and `/agent <id>` to select one.")
+            return
+        
+        # Initialize Letta client
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        # Parse the command: /tool [subcommand] [args...]
+        parts = message.strip().split()
+        
+        if len(parts) == 1:
+            # /tool - list tools
+            handle_tool_list(client, agent_id, chat_id)
+            return
+        
+        subcommand = parts[1].lower()
+        
+        if subcommand == "list":
+            # /tool list - list tools
+            handle_tool_list(client, agent_id, chat_id)
+        elif subcommand == "attach":
+            # /tool attach <name>
+            if len(parts) < 3:
+                send_telegram_message(chat_id, "❌ Usage: `/tool attach <tool_name>`\n\nExample: `/tool attach calculator`")
+                return
+            tool_name = " ".join(parts[2:])  # Support multi-word tool names
+            handle_tool_attach(client, agent_id, tool_name, chat_id)
+        elif subcommand == "detach":
+            # /tool detach <name>
+            if len(parts) < 3:
+                send_telegram_message(chat_id, "❌ Usage: `/tool detach <tool_name>`\n\nExample: `/tool detach calculator`")
+                return
+            tool_name = " ".join(parts[2:])  # Support multi-word tool names
+            handle_tool_detach(client, agent_id, tool_name, chat_id)
+        else:
+            send_telegram_message(chat_id, f"❌ Unknown subcommand: `{subcommand}`\n\n**Usage:**\n• `/tool` or `/tool list` - List tools\n• `/tool attach <name>` - Attach tool\n• `/tool detach <name>` - Detach tool")
+    
+    except Exception as e:
+        print(f"Error handling tool command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing tool command. Please try again.")
+        raise
+
+def handle_tool_list(client, agent_id: str, chat_id: str):
+    """
+    Handle listing attached and available tools
+    """
+    try:
+        send_telegram_typing(chat_id)
+        
+        # Get agent's currently attached tools
+        try:
+            attached_tools = client.agents.tools.list(agent_id=agent_id)
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error getting attached tools: {str(e)}")
+            return
+        
+        # Get all available tools
+        try:
+            all_tools = client.tools.list()
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error getting available tools: {str(e)}")
+            return
+        
+        # Build response message
+        response = "🔧 **Tool Management**\n\n"
+        
+        # Show attached tools
+        if attached_tools:
+            response += f"**Attached Tools ({len(attached_tools)}):**\n"
+            for tool in attached_tools:
+                response += f"🟢 `{tool.name}` - {tool.description or 'No description'}\n"
+        else:
+            response += "**Attached Tools:** None\n"
+        
+        response += "\n"
+        
+        # Show available tools (not already attached)
+        attached_tool_ids = {tool.id for tool in attached_tools}
+        available_tools = [tool for tool in all_tools if tool.id not in attached_tool_ids]
+        
+        if available_tools:
+            response += f"**Available Tools ({len(available_tools)}):**\n"
+            for tool in available_tools[:10]:  # Limit to first 10 to avoid message length issues
+                response += f"⚪ `{tool.name}` - {tool.description or 'No description'}\n"
+            if len(available_tools) > 10:
+                response += f"... and {len(available_tools) - 10} more tools\n"
+        else:
+            response += "**Available Tools:** All tools are already attached\n"
+        
+        response += "\n**Usage:**\n"
+        response += "• `/tool attach <name>` - Attach a tool\n"
+        response += "• `/tool detach <name>` - Detach a tool"
+        
+        send_telegram_message(chat_id, response)
+        
+    except Exception as e:
+        print(f"Error in handle_tool_list: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error listing tools: {str(e)}")
+        raise
+
+def handle_tool_attach(client, agent_id: str, tool_name: str, chat_id: str):
+    """
+    Handle attaching a tool to the agent
+    """
+    try:
+        send_telegram_typing(chat_id)
+        
+        # Search for the tool by name
+        try:
+            all_tools = client.tools.list(name=tool_name)
+            if not all_tools:
+                # Try partial name matching if exact match fails
+                all_tools = client.tools.list()
+                matching_tools = [tool for tool in all_tools if tool_name.lower() in tool.name.lower()]
+                if not matching_tools:
+                    send_telegram_message(chat_id, f"❌ Tool `{tool_name}` not found.\n\nUse `/tool list` to see available tools.")
+                    return
+                elif len(matching_tools) > 1:
+                    response = f"❌ Multiple tools match `{tool_name}`:\n\n"
+                    for tool in matching_tools[:5]:  # Show first 5 matches
+                        response += f"• `{tool.name}` - {tool.description or 'No description'}\n"
+                    response += "\nPlease use a more specific name."
+                    send_telegram_message(chat_id, response)
+                    return
+                else:
+                    tool_to_attach = matching_tools[0]
+            else:
+                tool_to_attach = all_tools[0]
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error searching for tool: {str(e)}")
+            return
+        
+        # Check if tool is already attached
+        try:
+            attached_tools = client.agents.tools.list(agent_id=agent_id)
+            if any(tool.id == tool_to_attach.id for tool in attached_tools):
+                send_telegram_message(chat_id, f"⚠️ Tool `{tool_to_attach.name}` is already attached to this agent.")
+                return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error checking attached tools: {str(e)}")
+            return
+        
+        # Attach the tool
+        try:
+            client.agents.tools.attach(agent_id=agent_id, tool_id=tool_to_attach.id)
+            send_telegram_message(chat_id, f"✅ **Tool Attached Successfully**\n\n`{tool_to_attach.name}` has been attached to your agent.\n\n{tool_to_attach.description or 'No description available'}")
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error attaching tool: {str(e)}")
+            return
+        
+    except Exception as e:
+        print(f"Error in handle_tool_attach: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error attaching tool: {str(e)}")
+        raise
+
+def handle_tool_detach(client, agent_id: str, tool_name: str, chat_id: str):
+    """
+    Handle detaching a tool from the agent
+    """
+    try:
+        send_telegram_typing(chat_id)
+        
+        # Get agent's currently attached tools to find the tool by name
+        try:
+            attached_tools = client.agents.tools.list(agent_id=agent_id)
+            if not attached_tools:
+                send_telegram_message(chat_id, "❌ No tools are currently attached to this agent.")
+                return
+            
+            # Find the tool by name (exact or partial match)
+            matching_tools = [tool for tool in attached_tools if tool_name.lower() in tool.name.lower()]
+            
+            if not matching_tools:
+                response = f"❌ Tool `{tool_name}` is not attached to this agent.\n\n**Attached tools:**\n"
+                for tool in attached_tools:
+                    response += f"• `{tool.name}`\n"
+                send_telegram_message(chat_id, response)
+                return
+            elif len(matching_tools) > 1:
+                response = f"❌ Multiple attached tools match `{tool_name}`:\n\n"
+                for tool in matching_tools:
+                    response += f"• `{tool.name}` - {tool.description or 'No description'}\n"
+                response += "\nPlease use a more specific name."
+                send_telegram_message(chat_id, response)
+                return
+            else:
+                tool_to_detach = matching_tools[0]
+                
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error getting attached tools: {str(e)}")
+            return
+        
+        # Detach the tool
+        try:
+            client.agents.tools.detach(agent_id=agent_id, tool_id=tool_to_detach.id)
+            send_telegram_message(chat_id, f"✅ **Tool Detached Successfully**\n\n`{tool_to_detach.name}` has been detached from your agent.")
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error detaching tool: {str(e)}")
+            return
+        
+    except Exception as e:
+        print(f"Error in handle_tool_detach: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error detaching tool: {str(e)}")
+        raise
+
+def handle_shortcut_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /shortcut command to list, create, or delete shortcuts
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        import re
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Parse the command: /shortcut [subcommand] [args...]
+        parts = message.strip().split()
+        
+        if len(parts) == 1:
+            # /shortcut - list shortcuts
+            handle_shortcut_list(user_id, chat_id)
+            return
+        
+        subcommand = parts[1].lower()
+        
+        if subcommand == "delete":
+            # /shortcut delete <name>
+            if len(parts) < 3:
+                send_telegram_message(chat_id, "❌ Usage: `/shortcut delete <shortcut_name>`\n\nExample: `/shortcut delete herald`")
+                return
+            shortcut_name = parts[2]
+            handle_shortcut_delete(user_id, shortcut_name, chat_id)
+        elif len(parts) >= 3:
+            # /shortcut <name> <agent_id>
+            shortcut_name = parts[1]
+            agent_id = parts[2]
+            
+            # Validate shortcut name (alphanumeric + underscore only)
+            if not re.match("^[a-zA-Z0-9_]+$", shortcut_name):
+                send_telegram_message(chat_id, "❌ Shortcut name can only contain letters, numbers, and underscores.\n\nExample: `/shortcut herald agent123`")
+                return
+            
+            # Initialize Letta client to validate agent
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            handle_shortcut_create(client, user_id, shortcut_name, agent_id, chat_id)
+        else:
+            send_telegram_message(chat_id, f"❌ **Usage:**\n• `/shortcut` - List all shortcuts\n• `/shortcut <name> <agent_id>` - Create shortcut\n• `/shortcut delete <name>` - Delete shortcut\n\n**Example:**\n`/shortcut herald abc123`")
+    
+    except Exception as e:
+        print(f"Error handling shortcut command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing shortcut command. Please try again.")
+        raise
+
+def handle_shortcut_list(user_id: str, chat_id: str):
+    """
+    Handle listing user shortcuts with agent descriptions
+    """
+    try:
+        shortcuts = get_user_shortcuts(user_id)
+        
+        if not shortcuts:
+            send_telegram_message(chat_id, "**Shortcuts:**\n\nNo shortcuts saved yet.\n\n**Usage:**\n• `/shortcut <name> <agent_id>` - Create shortcut\n• `/switch <name>` - Quick switch to agent\n\n**Example:**\n`/shortcut herald abc123`")
+            return
+        
+        # Get user credentials to fetch agent details
+        try:
+            user_credentials = get_user_credentials(user_id)
+            if not user_credentials:
+                # Fallback to basic display if no credentials
+                response = "**Shortcuts:**\n\n"
+                for shortcut_name, shortcut_data in shortcuts.items():
+                    agent_name = shortcut_data.get("agent_name", "Unknown")
+                    response += f"{shortcut_name}\n  {agent_name}\n\n"
+                response += "**Usage:**\n• `/switch <name>` - Quick switch to agent"
+                send_telegram_message(chat_id, response)
+                return
+        except Exception:
+            # Fallback if credentials can't be retrieved
+            response = "**Shortcuts:**\n\n"
+            for shortcut_name, shortcut_data in shortcuts.items():
+                agent_name = shortcut_data.get("agent_name", "Unknown")
+                response += f"{shortcut_name}\n  {agent_name}\n\n"
+            response += "**Usage:**\n• `/switch <name>` - Quick switch to agent"
+            send_telegram_message(chat_id, response)
+            return
+        
+        # Fetch current agent details to show descriptions
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        send_telegram_typing(chat_id)
+        
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        response = "**Shortcuts:**\n\n"
+        
+        for shortcut_name, shortcut_data in shortcuts.items():
+            agent_id = shortcut_data["agent_id"]
+            stored_agent_name = shortcut_data.get("agent_name", "Unknown")
+            
+            try:
+                # Fetch current agent details
+                agent = client.agents.retrieve(agent_id=agent_id)
+                agent_name = agent.name
+                agent_description = getattr(agent, 'description', None) or getattr(agent, 'system', '')
+                
+                response += f"{shortcut_name}\n"
+                response += f"  {agent_name}\n"
+                if agent_description:
+                    response += f"  {agent_description}\n"
+                response += "\n"
+                
+                # Update shortcut if agent name changed
+                if agent_name != stored_agent_name:
+                    save_user_shortcut(user_id, shortcut_name, agent_id, agent_name)
+                
+            except ApiError as e:
+                if hasattr(e, 'status_code') and e.status_code == 404:
+                    response += f"{shortcut_name}\n"
+                    response += f"  {stored_agent_name} (not found)\n\n"
+                else:
+                    response += f"{shortcut_name}\n"
+                    response += f"  {stored_agent_name} (unavailable)\n\n"
+            except Exception:
+                response += f"{shortcut_name}\n"
+                response += f"  {stored_agent_name} (unavailable)\n\n"
+        
+        response += "**Usage:**\n"
+        response += "• `/switch <name>` - Quick switch to agent\n"
+        response += "• `/shortcut <name> <agent_id>` - Create/update shortcut\n"
+        response += "• `/shortcut delete <name>` - Delete shortcut"
+        
+        send_telegram_message(chat_id, response)
+        
+    except Exception as e:
+        print(f"Error in handle_shortcut_list: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error listing shortcuts: {str(e)}")
+        raise
+
+def handle_shortcut_create(client, user_id: str, shortcut_name: str, agent_id: str, chat_id: str):
+    """
+    Handle creating a shortcut
+    """
+    try:
+        send_telegram_typing(chat_id)
+        
+        # Validate that the agent exists
+        try:
+            agent = client.agents.retrieve(agent_id=agent_id)
+        except ApiError as e:
+            if hasattr(e, 'status_code') and e.status_code == 404:
+                send_telegram_message(chat_id, f"❌ Agent `{agent_id}` not found. Use `/agent` to see available agents.")
+                return
+            else:
+                send_telegram_message(chat_id, f"❌ Error validating agent: {e}")
+                return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error validating agent: {str(e)}")
+            return
+        
+        # Check if shortcut already exists
+        existing_shortcut = get_shortcut_by_name(user_id, shortcut_name)
+        action = "updated" if existing_shortcut else "created"
+        
+        # Save the shortcut
+        try:
+            save_user_shortcut(user_id, shortcut_name, agent_id, agent.name)
+            send_telegram_message(chat_id, f"✅ **Shortcut {action.title()} Successfully**\n\n`{shortcut_name}` → `{agent_id}` ({agent.name})\n\nUse `/switch {shortcut_name}` to quickly switch to this agent!")
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error creating shortcut: {str(e)}")
+            return
+        
+    except Exception as e:
+        print(f"Error in handle_shortcut_create: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error creating shortcut: {str(e)}")
+        raise
+
+def handle_shortcut_delete(user_id: str, shortcut_name: str, chat_id: str):
+    """
+    Handle deleting a shortcut
+    """
+    try:
+        # Check if shortcut exists
+        shortcut_data = get_shortcut_by_name(user_id, shortcut_name)
+        if not shortcut_data:
+            shortcuts = get_user_shortcuts(user_id)
+            if not shortcuts:
+                send_telegram_message(chat_id, "❌ No shortcuts found. Use `/shortcut <name> <agent_id>` to create one.")
+            else:
+                response = f"❌ Shortcut `{shortcut_name}` not found.\n\n**Available shortcuts:**\n"
+                for name in shortcuts.keys():
+                    response += f"• `{name}`\n"
+                send_telegram_message(chat_id, response)
+            return
+        
+        # Delete the shortcut
+        success = delete_user_shortcut(user_id, shortcut_name)
+        if success:
+            agent_name = shortcut_data.get("agent_name", "Unknown")
+            send_telegram_message(chat_id, f"✅ **Shortcut Deleted**\n\n`{shortcut_name}` (pointed to {agent_name}) has been removed.")
+        else:
+            send_telegram_message(chat_id, f"❌ Failed to delete shortcut `{shortcut_name}`. Please try again.")
+        
+    except Exception as e:
+        print(f"Error in handle_shortcut_delete: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error deleting shortcut: {str(e)}")
+        raise
+
+def handle_switch_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /switch command for quick agent switching using shortcuts
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Parse the command: /switch <shortcut_name>
+        parts = message.strip().split()
+        
+        if len(parts) != 2:
+            send_telegram_message(chat_id, "❌ Usage: `/switch <shortcut_name>`\n\nExample: `/switch herald`\n\nUse `/shortcut` to see your saved shortcuts.")
+            return
+        
+        shortcut_name = parts[1]
+        
+        # Get the shortcut
+        shortcut_data = get_shortcut_by_name(user_id, shortcut_name)
+        if not shortcut_data:
+            shortcuts = get_user_shortcuts(user_id)
+            if not shortcuts:
+                send_telegram_message(chat_id, "❌ No shortcuts found. Use `/shortcut <name> <agent_id>` to create one first.")
+            else:
+                response = f"❌ Shortcut `{shortcut_name}` not found.\n\n**Available shortcuts:**\n"
+                for name in shortcuts.keys():
+                    response += f"• `{name}`\n"
+                response += "\n**Usage:** `/switch <shortcut_name>`"
+                send_telegram_message(chat_id, response)
+            return
+        
+        agent_id = shortcut_data["agent_id"]
+        agent_name = shortcut_data.get("agent_name", "Unknown")
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Validate that the agent still exists
+        try:
+            send_telegram_typing(chat_id)
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            agent = client.agents.retrieve(agent_id=agent_id)
+            
+            # Update agent name in shortcut if it changed
+            if agent.name != agent_name:
+                save_user_shortcut(user_id, shortcut_name, agent_id, agent.name)
+                agent_name = agent.name
+            
+        except ApiError as e:
+            if hasattr(e, 'status_code') and e.status_code == 404:
+                send_telegram_message(chat_id, f"❌ Agent `{agent_id}` (shortcut: `{shortcut_name}`) no longer exists.\n\nUse `/shortcut delete {shortcut_name}` to remove this shortcut.")
+                return
+            else:
+                send_telegram_message(chat_id, f"❌ Error validating agent: {e}")
+                return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error validating agent: {str(e)}")
+            return
+        
+        # Switch to the agent (reuse logic from handle_agent_command)
+        success = save_chat_agent(chat_id, agent_id, agent_name)
+        
+        if success:
+            send_telegram_message(chat_id, f"✅ **Switched via shortcut `{shortcut_name}`**\n\nAgent: `{agent_id}` ({agent_name})\n\nYou can now chat with this agent!")
+        else:
+            send_telegram_message(chat_id, "❌ Failed to switch agent. Please try again.")
+    
+    except Exception as e:
+        print(f"Error handling switch command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing switch command. Please try again.")
         raise
 
 
