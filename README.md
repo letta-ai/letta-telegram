@@ -21,10 +21,12 @@ From an agent running on Telegram for a while:
 ## 🚀 What This Does
 
 This bot creates a bridge between Telegram and [Letta](https://letta.com) (formerly MemGPT), allowing you to:
+- **Multi-tenant authentication** - Each user brings their own Letta API key
 - Chat with stateful AI agents through Telegram
 - Maintain conversation history and context across sessions
 - **Switch between different agents per chat** using the `/agent` command
 - **Persistent agent preferences** that survive deployments
+- **Secure per-user credential storage** with encryption
 - Deploy scalably on Modal's serverless infrastructure
 - Handle both user-initiated and agent-initiated messages
 
@@ -35,7 +37,7 @@ This bot creates a bridge between Telegram and [Letta](https://letta.com) (forme
 Before you begin, you'll need:
 - [Modal](https://modal.com) account (for deployment)
 - Telegram Bot Token from [@BotFather](https://t.me/botfather)
-- [Letta](https://letta.com) account with API access
+- **Users will need their own [Letta](https://letta.com) accounts with API keys**
 
 ### 1. Clone and Install
 
@@ -46,40 +48,41 @@ pip install -r requirements.txt
 modal setup
 ```
 
-### 2. Set Up Your Letta Agent
+### 2. Multi-Tenant Authentication
 
-First, create and configure Letta agents:
-1. Visit [Letta's platform](https://letta.com) and create one or more agents
-2. Note your API key and API URL
-3. Agent IDs will be discovered automatically by the bot
+This bot uses **multi-tenant authentication** - each user authenticates with their own Letta API key:
+
+1. **Bot Owner**: You only need to deploy the bot - no Letta credentials required
+2. **Bot Users**: Each user gets their own API key from [Letta's platform](https://app.letta.com)
+3. Users authenticate with `/login <api_key>` command
+4. Each user sees and manages only their own agents
 
 ### 3. Configure Modal Secrets
 
-Create two Modal secrets with your credentials.
-
-`TELEGRAM_WEBHOOK_SECRET` is optional and can be left blank. It is a random string that can be used to verify the webhook request, but it is currently not implemented.
+Create a Modal secret with your bot credentials and encryption key:
 
 ```bash
-# Telegram bot credentials
+# Generate a secure encryption key (32+ characters)
+# Example: openssl rand -base64 32
+export ENCRYPTION_MASTER_KEY="your-secure-32-char-random-string-here"
+
+# Telegram bot credentials + encryption key
 modal secret create telegram-bot \
   TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather \
-  TELEGRAM_WEBHOOK_SECRET=optional_secret_for_security
+  TELEGRAM_WEBHOOK_SECRET=optional_secret_for_security \
+  ENCRYPTION_MASTER_KEY=$ENCRYPTION_MASTER_KEY
 
-# Letta API credentials  
-modal secret create letta-api \
-  LETTA_API_KEY=your_letta_api_key \
-  LETTA_API_URL=https://api.letta.com
-
-# If you have them in environment variables, you can use the following command:
+# Or if you already have them in environment variables:
 modal secret create telegram-bot \
   TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
-  TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET
-
-modal secret create letta-api \
-  LETTA_API_KEY=$LETTA_API_KEY \
-  LETTA_API_URL=$LETTA_API_URL
-
+  TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET \
+  ENCRYPTION_MASTER_KEY=$ENCRYPTION_MASTER_KEY
 ```
+
+**Important**: 
+- `ENCRYPTION_MASTER_KEY` is used to encrypt user API keys with per-user unique keys
+- Generate a secure random string (32+ characters) for this key
+- Keep this key secure - losing it means losing access to stored user credentials
 
 ### 4. Deploy to Modal
 
@@ -91,39 +94,88 @@ Save the webhook URL from the deployment output (looks like `https://your-app--t
 
 ### 5. Configure Telegram Webhook
 
-Run the setup script to connect Telegram to your deployed bot:
+Connect Telegram to your deployed bot with a simple curl command:
 
 ```bash
-python setup.py
+# Replace YOUR_BOT_TOKEN with your actual bot token
+# Replace YOUR_WEBHOOK_URL with the URL from step 4
+curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
+  -d "url={YOUR_WEBHOOK_URL}"
 ```
 
-The script will prompt for your webhook URL and configure everything automatically.
+**Example:**
+```bash
+curl -X POST "https://api.telegram.org/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/setWebhook" \
+  -d "url=https://your-app--telegram-webhook.modal.run"
+```
+
+## 🔐 User Authentication
+
+### For Bot Users
+
+Once the bot is deployed, users interact with it through these commands:
+
+```bash
+# Get started
+/start                   # Complete setup walkthrough for new users
+/help                    # See all available commands
+
+# Authentication
+/login sk-abc123...      # Authenticate with your Letta API key
+/status                  # Check authentication status  
+/logout                  # Remove stored credentials
+
+# Agent Management  
+/agent                   # List your available agents
+/agent agent_id_here     # Select an agent to chat with
+/ade                     # Get web interface link for current agent
+
+# Then just chat normally!
+Hello, how are you?      # Regular conversation with your selected agent
+```
+
+### Security Features
+
+- **Per-User Encryption**: Each user's API key is encrypted with a unique key derived from their Telegram user ID
+- **Automatic Message Deletion**: `/login` messages containing API keys are immediately deleted from chat history
+- **Credential Isolation**: Users can only access their own Letta agents and data
+- **Persistent Storage**: Credentials are securely stored and persist across bot restarts
+
+### User Flow
+
+1. **First Time**: User sends `/start` → Gets complete setup walkthrough
+2. **Login**: User sends `/login <their_api_key>` → API key validated and stored
+3. **Agent Selection**: User runs `/agent` → Sees their agents, selects one
+4. **Chat**: User can now chat normally with their selected agent
+5. **Management**: User can switch agents, check status, or logout anytime
+
+**Alternative**: Users can send any message → Gets "Authentication Required" prompt with `/start` suggestion
 
 ## 🔧 Configuration Reference
 
 ### Modal Secrets Structure
 
-Your credentials are stored as Modal secrets:
+Your bot credentials are stored as a Modal secret:
 
 **`telegram-bot` secret:**
 - `TELEGRAM_BOT_TOKEN`: Bot token from [@BotFather](https://t.me/botfather)
 - `TELEGRAM_WEBHOOK_SECRET`: (Optional) Security token for webhook validation
+- `ENCRYPTION_MASTER_KEY`: Master key for encrypting user API keys (32+ characters)
 
-**`letta-api` secret:**
-- `LETTA_API_KEY`: Your Letta API authentication key
-- `LETTA_API_URL`: API endpoint (default: `https://api.letta.com`)
+**User credentials are stored separately and encrypted per-user in Modal Volumes.**
 
 ### Message Flow
 
 ```
-User Message → Telegram → Webhook → Modal Function → Letta Agent → Response → Telegram
+User Message → Telegram → Webhook → Authentication Check → User's Letta Agent → Response → Telegram
 ```
 
 1. User sends message to your Telegram bot
-2. Telegram forwards via webhook to Modal endpoint
-3. Modal processes message asynchronously to avoid timeouts
-4. Message sent to Letta agent with user context
-5. Agent response polled and returned to Telegram
+2. Telegram forwards via webhook to Modal endpoint  
+3. Modal checks user authentication (requires `/login` first)
+4. Modal retrieves user's encrypted API key and decrypts it
+5. Message sent to user's specific Letta agent with user context
+6. Agent response streamed back to Telegram in real-time
 
 ## 🛠️ Development & Testing
 
@@ -156,29 +208,44 @@ This creates temporary endpoints you can use for testing.
 
 ### Commands
 
-- **`/agent`** - List all available agents and show current selection
+- **`/start`** - Complete setup walkthrough for new users
+- **`/login <api_key>`** - Authenticate with your Letta API key
+- **`/logout`** - Remove your stored credentials  
+- **`/status`** - Check your authentication status
+- **`/agent`** - List your available agents and show current selection
 - **`/agent <id>`** - Set your preferred agent for this chat
+- **`/ade`** - Get web interface link for current agent
 - **`/help`** - Show available commands
 
 ### How It Works
 
-1. **Persistent Storage**: Agent selections are stored using Modal Volumes, ensuring preferences persist across deployments
-2. **Per-Chat Settings**: Each chat (individual or group) can have its own agent selection
-3. **Automatic Discovery**: The bot automatically lists all agents from your Letta account
-4. **Validation**: Agent IDs are validated against your Letta account before saving
-5. **Fallback**: If no agent is selected for a chat, the system falls back to the `LETTA_AGENT_ID` environment variable (if set)
+1. **User Authentication**: Each user must authenticate with their own Letta API key using `/login`
+2. **Persistent Storage**: Both credentials and agent selections are stored using Modal Volumes
+3. **Per-User Isolation**: Each user sees only their own agents and data
+4. **Per-Chat Settings**: Each chat can have its own agent selection per authenticated user
+5. **Automatic Discovery**: The bot lists all agents from the authenticated user's Letta account
+6. **Validation**: Agent IDs are validated against the user's Letta account before saving
+7. **Security**: All user credentials are encrypted with per-user unique encryption keys
 
 ### Storage Structure
 
 ```
-/data/chats/
-├── {chat_id_1}/
-│   └── agent.json    # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
-├── {chat_id_2}/
-│   └── agent.json
+/data/
+├── users/
+│   ├── {telegram_user_id_1}/
+│   │   └── credentials.json    # Encrypted API key + metadata
+│   ├── {telegram_user_id_2}/
+│   │   └── credentials.json
+└── chats/
+    ├── {chat_id_1}/
+    │   └── agent.json         # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
+    ├── {chat_id_2}/
+    │   └── agent.json
 ```
 
-This structure is designed to be extensible for future per-chat settings.
+- **User credentials** are stored per Telegram user ID with encryption
+- **Agent selections** are stored per chat ID
+- This structure provides both security isolation and functionality
 
 ### Message Processing Features
 
@@ -200,24 +267,31 @@ For detailed Letta usage and API documentation, visit:
 **Bot not responding?**
 - Check Modal deployment logs: `modal logs`
 - Verify webhook URL is correct
-- Ensure secrets are properly configured
+- Ensure telegram-bot secret is properly configured with all required fields
+
+**Authentication issues?**
+- Verify user has valid Letta API key from https://app.letta.com
+- Check that `ENCRYPTION_MASTER_KEY` is set in telegram-bot secret
+- User may need to `/logout` and `/login` again if credentials are corrupted
+- Run `/status` to check authentication state
 
 **Letta API errors?**
-- Confirm API key and agent ID are valid
-- Check Letta service status
-- Review agent configuration and permissions
+- Each user must use their own valid API key
+- Confirm user's API key has access to agents they're trying to use
+- Check Letta service status at https://status.letta.com
+- User can run `/status` to validate their stored credentials
 
 **Deployment issues?**
 - Run `modal setup` to verify authentication
-- Check requirements.txt dependencies  
-- Ensure Modal app name is unique
+- Ensure `ENCRYPTION_MASTER_KEY` is a secure 32+ character string
+- Check that only `telegram-bot` secret exists (no `letta-api` secret needed)
+- Verify all dependencies in requirements.txt are available
 
 ## 📝 Project Structure
 
 ```
 letta-telegram/
 ├── main.py           # Main bot application with webhook handlers
-├── setup.py          # Webhook configuration script
 ├── requirements.txt  # Python dependencies
 └── README.md        # This file
 ```

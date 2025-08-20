@@ -11,7 +11,7 @@ image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": 
     "pydantic>=2.0",
     "telegramify-markdown",
     "letta_client",
-    "cryptography"
+    "cryptography>=3.4.8"
 ])
 
 app = modal.App("letta-telegram-bot", image=image)
@@ -19,42 +19,53 @@ app = modal.App("letta-telegram-bot", image=image)
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
 
-def get_encryption_key() -> bytes:
+def get_user_encryption_key(user_id: str) -> bytes:
     """
-    Get or generate the encryption key from Modal secrets
+    Generate a unique encryption key per user using PBKDF2
     """
     import base64
-    from cryptography.fernet import Fernet
+    import hashlib
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
     
-    # This should be stored in Modal secrets
-    # For now, we'll use the bot token as a seed (not ideal but works)
-    # In production, this should be a separate secret
-    encryption_secret = os.environ.get("ENCRYPTION_KEY")
-    if encryption_secret:
-        return base64.urlsafe_b64encode(encryption_secret.encode()[:32].ljust(32, b'0'))
-    else:
-        # Fallback: generate from bot token (not recommended for production)
-        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        return base64.urlsafe_b64encode(bot_token.encode()[:32].ljust(32, b'0'))
+    # Get master secret from Modal secrets
+    master_secret = os.environ.get("ENCRYPTION_MASTER_KEY")
+    if not master_secret:
+        # Fallback to bot token for backward compatibility
+        master_secret = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not master_secret:
+            raise ValueError("No ENCRYPTION_MASTER_KEY or TELEGRAM_BOT_TOKEN found in secrets")
+    
+    # Derive user-specific key using PBKDF2
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=f"letta-telegram-{user_id}".encode(),
+        iterations=100000,
+        backend=default_backend()
+    )
+    derived_key = kdf.derive(master_secret.encode())
+    return base64.urlsafe_b64encode(derived_key)
 
-def encrypt_api_key(api_key: str) -> str:
+def encrypt_api_key(user_id: str, api_key: str) -> str:
     """
-    Encrypt an API key for storage
+    Encrypt an API key for storage using user-specific key
     """
     from cryptography.fernet import Fernet
     
-    key = get_encryption_key()
+    key = get_user_encryption_key(user_id)
     f = Fernet(key)
     encrypted = f.encrypt(api_key.encode())
     return encrypted.decode()
 
-def decrypt_api_key(encrypted_key: str) -> str:
+def decrypt_api_key(user_id: str, encrypted_key: str) -> str:
     """
-    Decrypt an API key from storage
+    Decrypt an API key from storage using user-specific key
     """
     from cryptography.fernet import Fernet
     
-    key = get_encryption_key()
+    key = get_user_encryption_key(user_id)
     f = Fernet(key)
     decrypted = f.decrypt(encrypted_key.encode())
     return decrypted.decode()
@@ -67,7 +78,7 @@ def store_user_credentials(user_id: str, api_key: str, api_url: str = "https://a
         user_dir = f"/data/users/{user_id}"
         os.makedirs(user_dir, exist_ok=True)
         
-        encrypted_key = encrypt_api_key(api_key)
+        encrypted_key = encrypt_api_key(user_id, api_key)
         
         credentials = {
             "api_key": encrypted_key,
@@ -86,7 +97,8 @@ def store_user_credentials(user_id: str, api_key: str, api_url: str = "https://a
         
     except Exception as e:
         print(f"Error storing user credentials for {user_id}: {e}")
-        return False
+        # Re-raise the exception so it gets tracked by infrastructure
+        raise
 
 def get_user_credentials(user_id: str) -> Dict[str, str]:
     """
@@ -101,8 +113,8 @@ def get_user_credentials(user_id: str) -> Dict[str, str]:
         with open(credentials_path, "r") as f:
             credentials = json.load(f)
         
-        # Decrypt the API key
-        decrypted_key = decrypt_api_key(credentials["api_key"])
+        # Decrypt the API key using user-specific key
+        decrypted_key = decrypt_api_key(user_id, credentials["api_key"])
         
         return {
             "api_key": decrypted_key,
@@ -111,7 +123,8 @@ def get_user_credentials(user_id: str) -> Dict[str, str]:
         
     except Exception as e:
         print(f"Error retrieving user credentials for {user_id}: {e}")
-        return None
+        # Re-raise the exception so it gets tracked by infrastructure
+        raise
 
 def delete_user_credentials(user_id: str) -> bool:
     """
@@ -126,7 +139,8 @@ def delete_user_credentials(user_id: str) -> bool:
         
     except Exception as e:
         print(f"Error deleting user credentials for {user_id}: {e}")
-        return False
+        # Re-raise the exception so it gets tracked by infrastructure
+        raise
 
 def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com") -> tuple[bool, str]:
     """
@@ -179,10 +193,16 @@ def process_message_async(update: dict):
         print(f"Processing message: {message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
 
         # Check for user-specific credentials
-        user_credentials = get_user_credentials(user_id)
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/logout` and `/login <api_key>` again.")
+            # Re-raise so infrastructure can track it
+            raise
         
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nPlease authenticate to use this bot:\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate\n\nExample: `/login sk-123456789`")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate\n\nExample: `/login sk-123456789`")
             return
         
         # Use user-specific credentials
@@ -461,6 +481,9 @@ def telegram_webhook(update: dict):
             elif message_text.startswith('/status'):
                 handle_status_command(update, chat_id)
                 return {"ok": True}
+            elif message_text.startswith('/start'):
+                handle_start_command(update, chat_id)
+                return {"ok": True}
             
             # Send immediate feedback
             send_telegram_typing(chat_id)
@@ -572,9 +595,9 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             return
         
         # Store the credentials
-        success = store_user_credentials(user_id, api_key, api_url)
-        
-        if success:
+        try:
+            store_user_credentials(user_id, api_key, api_url)
+            
             response = f"✅ **Authentication Successful!**\n\n"
             response += f"User: @{user_name}\n"
             response += f"{validation_message}\n\n"
@@ -585,8 +608,11 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             response += "• Use `/logout` to remove your credentials"
             
             send_telegram_message(chat_id, response)
-        else:
+        except Exception as storage_error:
+            print(f"Failed to store credentials for user {user_id}: {storage_error}")
             send_telegram_message(chat_id, "❌ Failed to store credentials. Please try again.")
+            # Re-raise so infrastructure can track it
+            raise
             
     except Exception as e:
         print(f"Error handling login command: {str(e)}")
@@ -602,22 +628,31 @@ def handle_logout_command(update: dict, chat_id: str):
         user_name = update["message"]["from"].get("username", "Unknown")
         
         # Check if user has credentials
-        credentials = get_user_credentials(user_id)
+        try:
+            credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            # Re-raise so infrastructure can track it
+            raise
         
         if not credentials:
             send_telegram_message(chat_id, "❌ You are not logged in. Use `/login <api_key>` to authenticate.")
             return
         
         # Delete the credentials
-        success = delete_user_credentials(user_id)
-        
-        if success:
+        try:
+            delete_user_credentials(user_id)
+            
             response = f"✅ **Logged Out Successfully**\n\n"
             response += f"User @{user_name}, your credentials have been removed.\n"
             response += "Use `/login <api_key>` to authenticate again."
             send_telegram_message(chat_id, response)
-        else:
+        except Exception as delete_error:
+            print(f"Failed to delete credentials for user {user_id}: {delete_error}")
             send_telegram_message(chat_id, "❌ Failed to remove credentials. Please try again.")
+            # Re-raise so infrastructure can track it
+            raise
             
     except Exception as e:
         print(f"Error handling logout command: {str(e)}")
@@ -633,7 +668,13 @@ def handle_status_command(update: dict, chat_id: str):
         user_name = update["message"]["from"].get("username", "Unknown")
         
         # Check if user has credentials
-        credentials = get_user_credentials(user_id)
+        try:
+            credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            # Re-raise so infrastructure can track it
+            raise
         
         if not credentials:
             response = "🔐 **Authentication Status**\n\n"
@@ -670,6 +711,75 @@ def handle_status_command(update: dict, chat_id: str):
         print(f"Error handling status command: {str(e)}")
         send_telegram_message(chat_id, "❌ Error checking authentication status. Please try again.")
 
+def handle_start_command(update: dict, chat_id: str):
+    """
+    Handle /start command to walk users through setup
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        first_name = update["message"]["from"].get("first_name", "")
+        
+        # Check if user is already authenticated
+        try:
+            credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            # Re-raise so infrastructure can track it
+            raise
+        
+        if credentials:
+            # User is already authenticated - show quick overview
+            response = f"👋 **Welcome back, {first_name}!**\n\n"
+            response += "You're already authenticated and ready to go!\n\n"
+            response += "**Quick Actions:**\n"
+            response += "• `/agent` - View and select your agents\n"
+            response += "• `/status` - Check your authentication status\n"
+            response += "• `/help` - See all available commands\n\n"
+            response += "Just type a message to start chatting with your agent!"
+        else:
+            # New user - provide complete setup guide
+            response = f"🚀 **Welcome to the Letta Telegram Bot, {first_name}!**\n\n"
+            response += "This bot connects you to your personal Letta AI agents. Here's how to get started:\n\n"
+            
+            response += "**Step 1: Get Your Letta API Key** 🔑\n"
+            response += "1. Visit https://app.letta.com\n"
+            response += "2. Sign up or log in to your account\n"
+            response += "3. Create at least one AI agent\n"
+            response += "4. Copy your API key from the settings\n\n"
+            
+            response += "**Step 2: Authenticate** 🔐\n"
+            response += "Send me your API key using this command:\n"
+            response += "`/login sk-your-api-key-here`\n\n"
+            response += "⚠️ **Note**: Your message with the API key will be automatically deleted for security.\n\n"
+            
+            response += "**Step 3: Select an Agent** 🤖\n"
+            response += "After logging in:\n"
+            response += "• Use `/agent` to see your available agents\n"
+            response += "• Use `/agent <agent_id>` to select one\n\n"
+            
+            response += "**Step 4: Start Chatting!** 💬\n"
+            response += "Once you've selected an agent, just send any message to start a conversation.\n\n"
+            
+            response += "**Need Help?**\n"
+            response += "• `/help` - See all commands\n"
+            response += "• `/status` - Check your setup progress\n\n"
+            
+            response += "**Privacy & Security** 🛡️\n"
+            response += "• Your API key is encrypted and stored securely\n"
+            response += "• Only you can access your agents and data\n"
+            response += "• Use `/logout` anytime to remove your credentials\n\n"
+            
+            response += "Ready to get started? Get your API key from https://app.letta.com and use `/login`!"
+        
+        send_telegram_message(chat_id, response)
+        
+    except Exception as e:
+        print(f"Error handling start command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing start command. Please try again or use `/help` for assistance.")
+
 def handle_agent_command(message: str, update: dict, chat_id: str):
     """
     Handle /agent command to list available agents or set agent ID
@@ -683,10 +793,16 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         user_name = update["message"]["from"].get("username", "Unknown")
         
         # Check for user-specific credentials
-        user_credentials = get_user_credentials(user_id)
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            # Re-raise so infrastructure can track it
+            raise
         
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nPlease authenticate to use this bot:\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
             return
         
         # Use user-specific credentials
@@ -792,6 +908,9 @@ def handle_help_command(chat_id: str):
     """
     help_text = """🤖 **Letta Telegram Bot Commands**
 
+**Getting Started:**
+• `/start` - Complete setup guide for new users
+
 **Authentication Commands:**
 • `/login <api_key>` - Authenticate with your Letta API key
 • `/logout` - Remove your stored credentials
@@ -805,13 +924,15 @@ def handle_help_command(chat_id: str):
 **Other Commands:**
 • `/help` - Show this help message
 
-**Getting Started:**
-1. Get your API key from https://app.letta.com
-2. Use `/login <api_key>` to authenticate
-3. Use `/agent` to select an agent
-4. Start chatting!
+**Quick Setup:**
+1. Use `/start` for a complete setup walkthrough
+2. Get your API key from https://app.letta.com
+3. Use `/login <api_key>` to authenticate
+4. Use `/agent` to select an agent
+5. Start chatting!
 
 **Examples:**
+• `/start` - Get step-by-step setup instructions
 • `/login sk-123456789` - Authenticate with your API key
 • `/agent` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
