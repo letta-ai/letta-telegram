@@ -353,12 +353,7 @@ def process_message_async(update: dict):
                 current_time = time.time()
                 # print(f"Received event {event.id} | {event.message_type:<20} | {event.date}")
                 # print(f"Event: {event}")
-                
-                # Check for overall timeout
-                if current_time - start_time > timeout_seconds:
-                    send_telegram_message(chat_id, "⏰ Response took too long and was terminated. Please try again with a simpler message.")
-                    break
-                
+             
                 # Send periodic "still processing" messages if no activity
                 if current_time - last_activity > 30:
                     send_telegram_typing(chat_id)
