@@ -593,6 +593,12 @@ def telegram_webhook(update: dict):
             elif message_text.startswith('/switch'):
                 handle_switch_command(message_text, update, chat_id)
                 return {"ok": True}
+            elif message_text.startswith('/projects'):
+                handle_projects_command(message_text, update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/project'):
+                handle_project_command(message_text, update, chat_id)
+                return {"ok": True}
             
             # Send immediate feedback
             send_telegram_typing(chat_id)
@@ -654,6 +660,75 @@ def save_chat_agent(chat_id: str, agent_id: str, agent_name: str):
     except Exception as e:
         print(f"Error saving chat agent for {chat_id}: {e}")
         return False
+
+def get_chat_project(chat_id: str) -> Dict[str, str]:
+    """
+    Get the project for a specific chat from volume storage
+    Returns dict with project info or None if no project is set
+    """
+    try:
+        project_file_path = f"/data/chats/{chat_id}/project.json"
+        if os.path.exists(project_file_path):
+            with open(project_file_path, "r") as f:
+                project_data = json.load(f)
+                return project_data
+    except Exception as e:
+        print(f"Error reading chat project for {chat_id}: {e}")
+    
+    return None
+
+def save_chat_project(chat_id: str, project_id: str, project_name: str, project_slug: str):
+    """
+    Save the project for a specific chat to volume storage
+    """
+    try:
+        chat_dir = f"/data/chats/{chat_id}"
+        os.makedirs(chat_dir, exist_ok=True)
+        
+        project_data = {
+            "project_id": project_id,
+            "project_name": project_name,
+            "project_slug": project_slug,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        project_file_path = f"{chat_dir}/project.json"
+        with open(project_file_path, "w") as f:
+            json.dump(project_data, f, indent=2)
+        
+        # Commit changes to persist them
+        volume.commit()
+        return True
+        
+    except Exception as e:
+        print(f"Error saving chat project for {chat_id}: {e}")
+        return False
+
+def get_all_projects(client):
+    """
+    Get all projects across all pages from the Letta API
+    """
+    all_projects = []
+    offset = 0
+    limit = 19  # Required page size
+    
+    while True:
+        try:
+            response = client.projects.list(offset=offset, limit=limit)
+            all_projects.extend(response.projects)
+            
+            # Check if there are more pages
+            if not response.has_next_page:
+                break
+                
+            # Move to next page
+            offset += len(response.projects)
+            
+        except Exception as e:
+            print(f"Error fetching projects page at offset {offset}: {e}")
+            raise
+    
+    return all_projects
 
 def blockquote_message(message: str) -> str:
     """
@@ -926,6 +1001,14 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
         
+        # Get current project for this chat
+        current_project = get_chat_project(chat_id)
+        if not current_project:
+            send_telegram_message(chat_id, "❌ **No project set**\n\nUse `/projects` to see available projects and `/project <id>` to select one.")
+            return
+        
+        project_id = current_project["project_id"]
+        
         # Parse the command: /agent [agent_id]
         parts = message.strip().split()
         
@@ -1034,6 +1117,12 @@ def handle_help_command(chat_id: str):
 • `/logout` - Remove your stored credentials
 • `/status` - Check your authentication status
 
+**Project Commands:**
+• `/project` - Show current project information
+• `/project <id>` - Switch to a specific project
+• `/projects` - List all available projects
+• `/projects <name>` - Search projects by name
+
 **Agent Commands:**
 • `/agent` - Show current agent information
 • `/agent <id>` - Switch to a specific agent
@@ -1058,12 +1147,15 @@ def handle_help_command(chat_id: str):
 1. Use `/start` for a complete setup walkthrough
 2. Get your API key from https://app.letta.com
 3. Use `/login <api_key>` to authenticate
-4. Use `/agents` to see available agents, then `/agent <id>` to select one
-5. Start chatting!
+4. Use `/projects` to see available projects, then `/project <id>` to select one
+5. Use `/agents` to see available agents, then `/agent <id>` to select one
+6. Start chatting!
 
 **Examples:**
 • `/start` - Get step-by-step setup instructions
 • `/login sk-123456789` - Authenticate with your API key
+• `/projects` - Lists all available projects in a table
+• `/project proj-abc123` - Switches to project with ID "proj-abc123"
 • `/agent` - Shows current agent information and details
 • `/agents` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
@@ -1153,6 +1245,14 @@ def handle_agents_command(update: dict, chat_id: str):
         letta_api_url = user_credentials["api_url"]
         
         try:
+            # Get current project for this chat
+            current_project = get_chat_project(chat_id)
+            if not current_project:
+                send_telegram_message(chat_id, "❌ **No project set**\n\nUse `/projects` to see available projects and `/project <id>` to select one.")
+                return
+            
+            project_id = current_project["project_id"]
+            
             # Initialize Letta client to list agents
             client = Letta(token=letta_api_key, base_url=letta_api_url)
             
@@ -1168,8 +1268,8 @@ def handle_agents_command(update: dict, chat_id: str):
                 except:
                     pass
             
-            # List all available agents
-            agents = client.agents.list()
+            # List all available agents in the current project
+            agents = client.agents.list(project_id=project_id)
             
             if not agents:
                 send_telegram_message(chat_id, "**Available Agents:**\n\nNo agents available. Create an agent first.")
@@ -1180,14 +1280,13 @@ def handle_agents_command(update: dict, chat_id: str):
             
             if current_agent_id:
                 response += f"**Current Agent:** {current_agent_name}\n"
-                response += f"```\n{current_agent_id}\n```\n"
+                response += f"`{current_agent_id}`\n\n"
             else:
                 response += "**Current Agent:** None set\n\n"
             
-            response += "**Available Agents:**\n```\n"
+            response += "**Available Agents:**\n\n"
             for agent in agents:
-                response += f"{agent.name}\n  {agent.id}\n\n"
-            response += "```\n"
+                response += f"{agent.name}\n`{agent.id}`\n\n"
             
             response += f"**Usage:** `/agent <agent_id>` to select an agent"
             
@@ -1236,11 +1335,19 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
         
+        # Get current project for this chat
+        current_project = get_chat_project(chat_id)
+        if not current_project:
+            send_telegram_message(chat_id, "❌ **No project set**\n\nUse `/projects` to see available projects and `/project <id>` to select one.")
+            return
+        
+        project_id = current_project["project_id"]
+        
         # Get agent ID for this chat
         agent_id = get_chat_agent(chat_id)
         
         if not agent_id:
-            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agent` to see available agents and `/agent <id>` to select one.")
+            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agents` to see available agents and `/agent <id>` to select one.")
             return
         
         # Initialize Letta client
@@ -1265,7 +1372,7 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
                 send_telegram_message(chat_id, "❌ Usage: `/tool attach <tool_name>`\n\nExample: `/tool attach calculator`")
                 return
             tool_name = " ".join(parts[2:])  # Support multi-word tool names
-            handle_tool_attach(client, agent_id, tool_name, chat_id)
+            handle_tool_attach(client, project_id, agent_id, tool_name, chat_id)
         elif subcommand == "detach":
             # /tool detach <name>
             if len(parts) < 3:
@@ -1295,9 +1402,9 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
             send_telegram_message(chat_id, f"❌ Error getting attached tools: {str(e)}")
             return
         
-        # Get all available tools
+        # Get all available tools in the current project
         try:
-            all_tools = client.tools.list()
+            all_tools = client.tools.list(project_id=project_id)
         except Exception as e:
             send_telegram_message(chat_id, f"❌ Error getting available tools: {str(e)}")
             return
@@ -1339,7 +1446,7 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
         send_telegram_message(chat_id, f"❌ Error listing tools: {str(e)}")
         raise
 
-def handle_tool_attach(client, agent_id: str, tool_name: str, chat_id: str):
+def handle_tool_attach(client, project_id: str, agent_id: str, tool_name: str, chat_id: str):
     """
     Handle attaching a tool to the agent
     """
@@ -1348,10 +1455,10 @@ def handle_tool_attach(client, agent_id: str, tool_name: str, chat_id: str):
         
         # Search for the tool by name
         try:
-            all_tools = client.tools.list(name=tool_name)
+            all_tools = client.tools.list(project_id=project_id, name=tool_name)
             if not all_tools:
                 # Try partial name matching if exact match fails
-                all_tools = client.tools.list()
+                all_tools = client.tools.list(project_id=project_id)
                 matching_tools = [tool for tool in all_tools if tool_name.lower() in tool.name.lower()]
                 if not matching_tools:
                     send_telegram_message(chat_id, f"❌ Tool `{tool_name}` not found.\n\nUse `/tool list` to see available tools.")
@@ -1755,6 +1862,193 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
     except Exception as e:
         print(f"Error handling switch command: {str(e)}")
         send_telegram_message(chat_id, "❌ Error processing switch command. Please try again.")
+        raise
+
+def handle_projects_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /projects command to list all projects or search by name
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Parse the command: /projects [search_name]
+        parts = message.strip().split()
+        search_name = " ".join(parts[1:]) if len(parts) > 1 else None
+        
+        try:
+            send_telegram_typing(chat_id)
+            
+            # Initialize Letta client
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            
+            # Get all projects from API (handles pagination)
+            projects = get_all_projects(client)
+            
+            if not projects:
+                send_telegram_message(chat_id, "**Projects:**\n\nNo projects available.")
+                return
+            
+            # Filter by name if search term provided
+            if search_name:
+                filtered_projects = [
+                    p for p in projects 
+                    if search_name.lower() in p.name.lower()
+                ]
+                if not filtered_projects:
+                    send_telegram_message(chat_id, f"**Projects:**\n\nNo projects found matching '{search_name}'.")
+                    return
+                projects = filtered_projects
+                header = f"**Projects matching '{search_name}' ({len(projects)}):**"
+            else:
+                header = f"**Projects ({len(projects)}):**"
+            
+            # Build clean format
+            response = f"{header}\n\n"
+            
+            for project in projects:
+                response += f"{project.name} (`{project.slug}`)\n"
+                response += f"ID: `{project.id}`\n\n"
+            response += "**Usage:** `/project <project_id>` to select a project"
+            
+            send_telegram_message(chat_id, response)
+            
+        except ApiError as e:
+            send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
+            return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error listing projects: {str(e)}")
+            return
+    
+    except Exception as e:
+        print(f"Error handling projects command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing projects command. Please try again.")
+        raise
+
+def handle_project_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /project command to show current project or switch to a project
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for user-specific credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            raise
+        
+        if not user_credentials:
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Parse the command: /project [project_id]
+        parts = message.strip().split()
+        
+        if len(parts) == 1:
+            # Show current project info
+            current_project = get_chat_project(chat_id)
+            
+            if not current_project:
+                send_telegram_message(chat_id, "**Current Project:** None set\n\nUse `/projects` to see available projects and `/project <project_id>` to select one.")
+                return
+            
+            response = f"**Current Project:** {current_project['project_name']}\n\n"
+            response += f"**ID:** {current_project['project_id']}\n"
+            response += f"**Slug:** {current_project['project_slug']}\n\n"
+            response += "**Usage:**\n"
+            response += "• `/projects` - List all available projects\n"
+            response += "• `/project <project_id>` - Switch to different project"
+            
+            send_telegram_message(chat_id, response)
+            return
+        
+        if len(parts) != 2:
+            send_telegram_message(chat_id, "❌ Usage: `/project [project_id]`\n\nExamples:\n• `/project` - Show current project info\n• `/project proj-abc123` - Switch to project\n• `/projects` - List all available projects")
+            return
+        
+        new_project_id = parts[1].strip()
+        
+        # Validate project ID format (basic validation)
+        if not new_project_id or len(new_project_id) < 3:
+            send_telegram_message(chat_id, "❌ Project ID must be at least 3 characters long")
+            return
+        
+        # Validate that the project exists
+        try:
+            send_telegram_typing(chat_id)
+            
+            # Initialize Letta client
+            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            
+            # Get all projects to find the one we're looking for (handles pagination)
+            projects = get_all_projects(client)
+            
+            # Find the project by ID
+            target_project = None
+            for project in projects:
+                if project.id == new_project_id:
+                    target_project = project
+                    break
+            
+            if not target_project:
+                send_telegram_message(chat_id, f"❌ Project `{new_project_id}` not found. Use `/projects` to see available projects.")
+                return
+            
+            # Save the project selection to volume storage
+            success = save_chat_project(
+                chat_id, 
+                target_project.id, 
+                target_project.name, 
+                target_project.slug
+            )
+            
+            if success:
+                send_telegram_message(chat_id, f"✅ Project set to: `{target_project.id}` ({target_project.name})\n\nThis project will now be used for agent and tool operations.")
+            else:
+                send_telegram_message(chat_id, "❌ Failed to save project selection. Please try again.")
+                
+        except ApiError as e:
+            send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
+            return
+        except Exception as e:
+            send_telegram_message(chat_id, f"❌ Error setting project: {str(e)}")
+            return
+    
+    except Exception as e:
+        print(f"Error handling project command: {str(e)}")
+        send_telegram_message(chat_id, "❌ Error processing project command. Please try again.")
         raise
 
 
