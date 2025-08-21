@@ -1797,6 +1797,21 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
         # Parse the command: /switch <shortcut_name>
         parts = message.strip().split()
         
+        # If no arguments, list all shortcuts
+        if len(parts) == 1:
+            shortcuts = get_user_shortcuts(user_id)
+            if not shortcuts:
+                send_telegram_message(chat_id, "No shortcuts found. Use `/shortcut <name> <agent_id>` to create one first.")
+                return
+            
+            response = ""
+            for name, data in shortcuts.items():
+                agent_name = data.get("agent_name", "Unknown")
+                response += f"`{name}`: {agent_name}\n"
+            
+            send_telegram_message(chat_id, response.rstrip())
+            return
+        
         if len(parts) != 2:
             send_telegram_message(chat_id, "❌ Usage: `/switch <shortcut_name>`\n\nExample: `/switch herald`\n\nUse `/shortcut` to see your saved shortcuts.")
             return
