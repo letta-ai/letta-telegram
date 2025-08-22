@@ -1217,7 +1217,7 @@ def handle_help_command(chat_id: str):
 • `/agents` - Lists all available agents with their IDs and names
 • `/agent abc123` - Switches to agent with ID "abc123"
 • `/tool` - Shows all attached and available tools
-• `/tool attach calculator` - Attaches the calculator tool to your agent
+• `/tool attach web_search` - Attaches the web_search tool to your agent
 • `/tool detach web_search` - Removes the web_search tool from your agent
 • `/shortcut herald abc123` - Creates shortcut "herald" for agent abc123
 • `/switch herald` - Quickly switches to the agent saved as "herald"
