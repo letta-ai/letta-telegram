@@ -3,6 +3,7 @@ import json
 from typing import Dict, Any
 from datetime import datetime
 import modal
+from fastapi import Request, HTTPException
 
 
 image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": "1"}).pip_install([
@@ -47,6 +48,11 @@ def get_user_encryption_key(user_id: str) -> bytes:
     )
     derived_key = kdf.derive(master_secret.encode())
     return base64.urlsafe_b64encode(derived_key)
+
+
+def get_webhook_secret():
+    """Get the Telegram webhook secret from environment variables"""
+    return os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 
 def encrypt_api_key(user_id: str, api_key: str) -> str:
     """
@@ -239,10 +245,39 @@ def delete_user_shortcut(user_id: str, shortcut_name: str) -> bool:
         print(f"Error deleting shortcut '{shortcut_name}' for user {user_id}: {e}")
         raise
 
-def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com") -> tuple[bool, str]:
+def find_default_project(client):
+    """
+    Find the 'Default Project' by name from all available projects
+    Returns (project_id, project_name, project_slug) or (None, None, None) if not found
+    """
+    try:
+        # Try to search by name first (if the API supports it)
+        try:
+            projects = client.projects.list(name="Default Project")
+            if hasattr(projects, 'projects') and len(projects.projects) > 0:
+                project = projects.projects[0]
+                return project.id, project.name, project.slug
+        except Exception:
+            # Fallback to listing all projects if name filter doesn't work
+            pass
+        
+        # Fallback: get all projects and search manually
+        all_projects = get_all_projects(client)
+        for project in all_projects:
+            if project.name == "Default Project":
+                return project.id, project.name, project.slug
+        
+        return None, None, None
+        
+    except Exception as e:
+        print(f"Error finding Default Project: {e}")
+        return None, None, None
+
+def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com") -> tuple[bool, str, tuple]:
     """
     Validate a Letta API key by attempting to list agents
-    Returns (is_valid, error_message)
+    Returns (is_valid, message, default_project_info)
+    default_project_info is (project_id, project_name, project_slug) or (None, None, None)
     """
     try:
         from letta_client import Letta
@@ -251,15 +286,19 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
         client = Letta(token=api_key, base_url=api_url)
         # Try to list agents to validate the API key
         agents = client.agents.list()
-        return True, f"Successfully authenticated. Found {len(agents)} agents."
+        
+        # Find Default Project
+        default_project_info = find_default_project(client)
+        
+        return True, f"Successfully authenticated. Found {len(agents)} agents.", default_project_info
         
     except ApiError as e:
         if hasattr(e, 'status_code') and e.status_code == 401:
-            return False, "Invalid API key"
+            return False, "Invalid API key", (None, None, None)
         else:
-            return False, f"API error: {str(e)}"
+            return False, f"API error: {str(e)}", (None, None, None)
     except Exception as e:
-        return False, f"Connection error: {str(e)}"
+        return False, f"Connection error: {str(e)}", (None, None, None)
 
 @app.function(
     image=image,
@@ -540,10 +579,18 @@ def process_message_async(update: dict):
     volumes={"/data": volume}
 )
 @modal.fastapi_endpoint(method="POST")
-def telegram_webhook(update: dict):
+def telegram_webhook(update: dict, request: Request):
     """
-    Fast webhook handler that spawns background processing
+    Fast webhook handler that spawns background processing with secret validation
     """
+    # Validate webhook secret for security
+    webhook_secret = get_webhook_secret()
+    if webhook_secret:
+        telegram_secret = request.headers.get("x-telegram-bot-api-secret-token")
+        if telegram_secret != webhook_secret:
+            print(f"Invalid webhook secret: expected {webhook_secret}, got {telegram_secret}")
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid webhook secret")
+    
     print(f"Received update: {update}")
     
     try:
@@ -767,7 +814,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
         
         # Validate the API key
         send_telegram_typing(chat_id)
-        is_valid, validation_message = validate_letta_api_key(api_key, api_url)
+        is_valid, validation_message, default_project_info = validate_letta_api_key(api_key, api_url)
         
         if not is_valid:
             send_telegram_message(chat_id, f"❌ {validation_message}\n\nPlease check your API key and try again.")
@@ -777,14 +824,29 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
         try:
             store_user_credentials(user_id, api_key, api_url)
             
-            response = f"✅ **Authentication Successful!**\n\n"
-            response += f"User: @{user_name}\n"
+            # Auto-assign Default Project if found and user doesn't have a project set
+            project_set_message = ""
+            default_project_id, default_project_name, default_project_slug = default_project_info
+            if default_project_id:
+                try:
+                    # Check if user already has a project set
+                    current_project = get_chat_project(chat_id)
+                    if not current_project:
+                        # Set the Default Project
+                        save_chat_project(chat_id, default_project_id, default_project_name, default_project_slug)
+                        project_set_message = f"📁 Project set to: **{default_project_name}**\n\n"
+                except Exception as e:
+                    print(f"Warning: Could not auto-assign Default Project: {e}")
+            
+            response = f"👾 Welcome to Letta, {user_name}**\n\n"
             response += f"{validation_message}\n\n"
+            response += project_set_message
             response += "You can now:\n"
             response += "• Chat with your Letta agents\n"
-            response += "• Use `/agent` to select an agent\n"
-            response += "• Use `/status` to check your authentication status\n"
-            response += "• Use `/logout` to remove your credentials"
+            response += "• Use `/agents` to list available agents\n"
+            response += "• Use `/agent <id>` to select an agent\n"
+            response += "• Use `/projects` to view/switch projects\n"
+            response += "• Use `/help` to see all commands"
             
             send_telegram_message(chat_id, response)
         except Exception as storage_error:
@@ -866,7 +928,7 @@ def handle_status_command(update: dict, chat_id: str):
         
         # Validate the stored credentials
         send_telegram_typing(chat_id)
-        is_valid, validation_message = validate_letta_api_key(
+        is_valid, validation_message, _ = validate_letta_api_key(
             credentials["api_key"], 
             credentials["api_url"]
         )
