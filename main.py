@@ -2630,52 +2630,108 @@ def convert_to_telegram_markdown(text: str) -> str:
             escaped_text = escaped_text.replace(char, f'\\{char}')
         return escaped_text
 
+def split_message_at_boundary(text: str, max_bytes: int = 4096) -> list[str]:
+    """
+    Split a message at natural boundaries to stay within byte limit
+    """
+    # If message fits, return as-is
+    if len(text.encode('utf-8')) <= max_bytes:
+        return [text]
+    
+    chunks = []
+    remaining = text
+    
+    while remaining and len(remaining.encode('utf-8')) > max_bytes:
+        # Try different split boundaries in order of preference
+        split_pos = None
+        
+        # 1. Try double newlines (paragraph breaks)
+        for i in range(len(remaining) - 1, 0, -1):
+            if remaining[i-1:i+1] == '\n\n' and len(remaining[:i].encode('utf-8')) <= max_bytes:
+                split_pos = i
+                break
+        
+        # 2. Try single newlines (line breaks)
+        if split_pos is None:
+            for i in range(len(remaining) - 1, 0, -1):
+                if remaining[i] == '\n' and len(remaining[:i].encode('utf-8')) <= max_bytes:
+                    split_pos = i
+                    break
+        
+        # 3. Try spaces (word boundaries)
+        if split_pos is None:
+            for i in range(len(remaining) - 1, 0, -1):
+                if remaining[i] == ' ' and len(remaining[:i].encode('utf-8')) <= max_bytes:
+                    split_pos = i
+                    break
+        
+        # 4. Hard cut at byte boundary (last resort)
+        if split_pos is None:
+            # Find the largest valid UTF-8 prefix that fits
+            for i in range(len(remaining), 0, -1):
+                if len(remaining[:i].encode('utf-8')) <= max_bytes:
+                    split_pos = i
+                    break
+        
+        if split_pos:
+            chunk = remaining[:split_pos].strip()
+            if chunk:  # Only add non-empty chunks
+                chunks.append(chunk)
+            remaining = remaining[split_pos:].strip()
+        else:
+            # Safety fallback - should not happen
+            break
+    
+    # Add remaining text if any
+    if remaining:
+        chunks.append(remaining)
+    
+    return chunks
+
 def send_telegram_message(chat_id: str, text: str):
     """
-    Send a message to Telegram chat
-    Note: Each message must be less than 4,096 UTF-8 characters
+    Send a message to Telegram chat, splitting long messages intelligently
     """
     try:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
         if not bot_token:
             print("Error: Missing Telegram bot token")
             return
-
-        # Log the message to the console
-        print(f"Sending message to Telegram: {text}")
-
-        # Check if message exceeds Telegram's 4,096 character limit
-        if len(text.encode('utf-8')) > 4096:
-            original_length = len(text.encode('utf-8'))
-            # Truncate to fit within limit, leaving space for truncation notice
-            truncation_notice = "\n\n[Message truncated due to length limit]"
-            max_length = 4096 - len(truncation_notice.encode('utf-8'))
-
-            # Truncate at character boundary to avoid breaking UTF-8
-            truncated_text = text.encode('utf-8')[:max_length].decode('utf-8', errors='ignore')
-            text = truncated_text + truncation_notice
-            print(f"⚠️  Message truncated from {original_length} to {len(text.encode('utf-8'))} bytes")
-
-        # Convert to Telegram MarkdownV2 format
-        markdown_text = convert_to_telegram_markdown(text)
-
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": markdown_text,
-            "parse_mode": "MarkdownV2"
-        }
-
+        
+        # Split message if it's too long
+        chunks = split_message_at_boundary(text)
+        
+        if len(chunks) > 1:
+            print(f"📨 Splitting long message into {len(chunks)} parts")
+        
         import requests
-        response = requests.post(url, data=payload, timeout=10)
-        if response.status_code != 200:
-            error_msg = f"Telegram API error: {response.status_code} - {response.text}"
-            print(error_msg)
-            raise Exception(error_msg)
-
+        import time
+        
+        for i, chunk in enumerate(chunks):
+            print(f"Sending message part {i+1}/{len(chunks)} to Telegram: {chunk[:100]}{'...' if len(chunk) > 100 else ''}")
+            
+            # Convert to Telegram MarkdownV2 format
+            markdown_text = convert_to_telegram_markdown(chunk)
+            
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": markdown_text,
+                "parse_mode": "MarkdownV2"
+            }
+            
+            response = requests.post(url, data=payload, timeout=10)
+            if response.status_code != 200:
+                error_msg = f"Telegram API error: {response.status_code} - {response.text}"
+                print(error_msg)
+                raise Exception(error_msg)
+            
+            # Small delay between messages to maintain order
+            if i < len(chunks) - 1:
+                time.sleep(0.1)
+                
     except Exception as e:
         print(f"Error sending Telegram message: {str(e)}")
-
         # Re-raise the exception to preserve call stack in logs
         raise
 
