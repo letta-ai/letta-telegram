@@ -99,14 +99,17 @@ Connect Telegram to your deployed bot with a simple curl command:
 ```bash
 # Replace YOUR_BOT_TOKEN with your actual bot token
 # Replace YOUR_WEBHOOK_URL with the URL from step 4
+# Replace YOUR_WEBHOOK_SECRET with a secure random string (optional but recommended)
 curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
-  -d "url={YOUR_WEBHOOK_URL}"
+  -d "url={YOUR_WEBHOOK_URL}" \
+  -d "secret_token={YOUR_WEBHOOK_SECRET}"
 ```
 
 **Example:**
 ```bash
 curl -X POST "https://api.telegram.org/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/setWebhook" \
-  -d "url=https://your-app--telegram-webhook.modal.run"
+  -d "url=https://your-app--telegram-webhook.modal.run" \
+  -d "secret_token=MySecureRandomString123"
 ```
 
 ## 🔐 User Authentication
@@ -125,10 +128,18 @@ Once the bot is deployed, users interact with it through these commands:
 /status                  # Check authentication status  
 /logout                  # Remove stored credentials
 
-# Agent Management  
-/agent                   # List your available agents
+# Project & Agent Management
+/projects                # List available projects
+/project project_id      # Switch to a specific project  
+/agents                  # List your available agents
 /agent agent_id_here     # Select an agent to chat with
 /ade                     # Get web interface link for current agent
+
+# Tools & Shortcuts
+/tool                    # List available tools
+/tool attach calculator  # Attach a tool to your agent
+/shortcut                # List your shortcuts
+/switch herald           # Quick switch using shortcut
 
 # Then just chat normally!
 Hello, how are you?      # Regular conversation with your selected agent
@@ -159,7 +170,7 @@ Your bot credentials are stored as a Modal secret:
 
 **`telegram-bot` secret:**
 - `TELEGRAM_BOT_TOKEN`: Bot token from [@BotFather](https://t.me/botfather)
-- `TELEGRAM_WEBHOOK_SECRET`: (Optional) Security token for webhook validation
+- `TELEGRAM_WEBHOOK_SECRET`: (Required for security) Security token for webhook validation - must match the `secret_token` used when registering webhook
 - `ENCRYPTION_MASTER_KEY`: Master key for encrypting user API keys (32+ characters)
 
 **User credentials are stored separately and encrypted per-user in Modal Volumes.**
@@ -208,14 +219,37 @@ This creates temporary endpoints you can use for testing.
 
 ### Commands
 
+**Getting Started:**
 - **`/start`** - Complete setup walkthrough for new users
+- **`/help`** - Show available commands
+
+**Authentication:**
 - **`/login <api_key>`** - Authenticate with your Letta API key
 - **`/logout`** - Remove your stored credentials  
 - **`/status`** - Check your authentication status
-- **`/agent`** - List your available agents and show current selection
-- **`/agent <id>`** - Set your preferred agent for this chat
+
+**Project Management:**
+- **`/project`** - Show current project information
+- **`/project <id>`** - Switch to a specific project
+- **`/projects`** - List all available projects
+- **`/projects <name>`** - Search projects by name
+
+**Agent Management:**
+- **`/agent`** - Show current agent information
+- **`/agent <id>`** - Switch to a specific agent
+- **`/agents`** - List all available agents
 - **`/ade`** - Get web interface link for current agent
-- **`/help`** - Show available commands
+
+**Tool Management:**
+- **`/tool`** or **`/tool list`** - List attached and available tools
+- **`/tool attach <name>`** - Attach a tool to your agent
+- **`/tool detach <name>`** - Detach a tool from your agent
+
+**Shortcuts:**
+- **`/shortcut`** - List your saved shortcuts
+- **`/shortcut <name> <agent_id>`** - Create shortcut for quick switching
+- **`/shortcut delete <name>`** - Delete a shortcut
+- **`/switch <name>`** - Quickly switch to agent using shortcut
 
 ### How It Works
 
