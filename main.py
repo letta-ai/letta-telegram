@@ -548,12 +548,12 @@ def process_message_async(update: dict):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/logout` and `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             # Re-raise so infrastructure can track it
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate\n\nExample: `/login sk-123456789`")
+            send_telegram_message(chat_id, "(authentication required - use /start for setup or /login <api_key>)")
             return
 
         # Use user-specific credentials
@@ -561,10 +561,10 @@ def process_message_async(update: dict):
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
 
-        # Get agent ID for this chat
-        agent_id = get_chat_agent(chat_id)
-
-        if not agent_id:
+        # Get agent info for this chat
+        agent_info = get_chat_agent_info(chat_id)
+        
+        if not agent_info:
             # Check if user is responding to default agent offer
             preferences = get_user_preferences(user_id)
             if (preferences.get("default_agent_offered", False) and
@@ -573,25 +573,23 @@ def process_message_async(update: dict):
 
                 # User wants to create default agent
                 try:
-                    send_telegram_typing(chat_id)
+                    send_telegram_message(chat_id, "(processing...)")
                     client = Letta(token=letta_api_key, base_url=letta_api_url)
 
                     # Get current project
                     current_project = get_chat_project(chat_id)
                     if not current_project:
-                        send_telegram_message(chat_id, "❌ No project configured. Please run `/projects` to select a project first.")
+                        send_telegram_message(chat_id, "(error: no project configured - use /projects to select one)")
                         return
 
                     project_id = current_project["project_id"]
 
                     # Create default agent
-                    send_telegram_message(chat_id, "We're creating Ion for you.")
+                    send_telegram_message(chat_id, "(creating agent Ion...)")
                     try:
                         agent = create_default_agent(client, project_id, user_name)
                     except Exception as create_error:
-                        error_msg = f"❌ **Failed to create AI assistant:**\n\n"
-                        error_msg += f"**Error:** {str(create_error)}\n\n"
-                        error_msg += "Use `/agents` to browse existing agents and `/agent <id>` to select one."
+                        error_msg = f"(error: failed to create agent - {str(create_error)[:100]})"
                         send_telegram_message(chat_id, error_msg)
                         return
 
@@ -604,7 +602,7 @@ def process_message_async(update: dict):
                         save_user_preferences(user_id, preferences)
 
                         # Send introduction message to the agent
-                        send_telegram_message(chat_id, f"✅ **{agent.name}** is ready! Let me introduce them to you...")
+                        send_telegram_message(chat_id, f"({agent.name} is ready)")
 
                         # Create introduction flow
                         intro_context = f"[New user {user_name} just created you as their first Letta agent via Telegram (chat_id: {chat_id})]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news"
@@ -632,29 +630,48 @@ def process_message_async(update: dict):
                             if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                                 content = getattr(event, 'content', '')
                                 if content and content.strip():
-                                    send_telegram_message(chat_id, content)
+                                    prefixed_content = f"(**{agent.name}** says)\n\n{content}"
+                                    send_telegram_message(chat_id, prefixed_content)
 
                         return
                     else:
-                        send_telegram_message(chat_id, "❌ Failed to create agent. Please try `/agents` to browse existing ones.")
+                        send_telegram_message(chat_id, "(error: agent creation failed)")
                         return
 
                 except Exception as e:
                     print(f"Error creating default agent: {e}")
-                    send_telegram_message(chat_id, "❌ Error creating agent. Please try `/agents` to browse existing ones.")
+                    send_telegram_message(chat_id, "(error: unable to create agent)")
                     return
 
             # Default no agent message
-            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agents` to see available agents and `/agent <id>` to select one.")
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
             return
+
+        # Extract agent info
+        agent_id = agent_info["agent_id"]
+        agent_name = agent_info["agent_name"]
 
         # Initialize Letta client
         print("Initializing Letta client")
         client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        # Check if agent name has changed and update cache if needed
+        try:
+            current_agent = client.agents.retrieve(agent_id=agent_id)
+            if current_agent.name != agent_name:
+                print(f"Agent name changed from '{agent_name}' to '{current_agent.name}', updating cache")
+                save_chat_agent(chat_id, agent_id, current_agent.name)
+                agent_name = current_agent.name
+        except Exception as e:
+            print(f"Warning: Could not check for agent name updates: {e}")
+            # Continue with cached name if API call fails
 
         # Add context about the source and user
         context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text}"
         print(f"Context message: {context_message}")
+        
+        # Notify user that message was received
+        send_telegram_message(chat_id, "(please wait)")
 
         # Process agent response with streaming
         try:
@@ -701,18 +718,21 @@ def process_message_async(update: dict):
                         if message_type == "assistant_message":
                             content = getattr(event, 'content', '')
                             if content and content.strip():
-                                send_telegram_message(chat_id, content)
+                                # Add agent name prefix to the message
+                                prefixed_content = f"(**{agent_name}** says)\n\n{content}"
+                                send_telegram_message(chat_id, prefixed_content)
                                 last_activity = current_time
 
                         elif message_type == "reasoning_message":
-                            content = "> **Reasoning**\n" + blockquote_message(getattr(event, 'reasoning', ''))
+                            reasoning_text = getattr(event, 'reasoning', '')
+                            content = f"(**{agent_name}** thought)\n\n{blockquote_message(reasoning_text)}"
                             send_telegram_message(chat_id, content)
                             last_activity = current_time
 
                         elif message_type == "system_alert":
                             alert_message = getattr(event, 'message', '')
                             if alert_message and alert_message.strip():
-                                send_telegram_message(chat_id, f"ℹ️ {alert_message}")
+                                send_telegram_message(chat_id, f"(info: {alert_message})")
                                 last_activity = current_time
 
                         elif message_type == "tool_call_message":
@@ -726,11 +746,11 @@ def process_message_async(update: dict):
                                     args_obj = json.loads(arguments)
 
                                     if tool_name == "archival_memory_insert":
-                                        tool_msg = "**Remembered**"
+                                        tool_msg = f"(**{agent_name}** remembered)"
                                         tool_msg += f"\n{blockquote_message(args_obj['content'])}"
 
                                     elif tool_name == "archival_memory_search":
-                                        tool_msg = f"**Remembering** `{args_obj['query']}`"
+                                        tool_msg = f"(**{agent_name}** searching: {args_obj['query']})"
 
                                     #
                                     # Memory modification operations
@@ -746,7 +766,7 @@ def process_message_async(update: dict):
                                         block_label = args_obj['label']
                                         insert_line = args_obj['insert_line']
                                         new_str = args_obj['new_str']
-                                        tool_msg = f"**Inserting into `{block_label}`**"
+                                        tool_msg = f"(**{agent_name}** updating memory)\n"
                                         tool_msg += f"\n{blockquote_message(new_str)}"
 
                                     # {
@@ -759,18 +779,24 @@ def process_message_async(update: dict):
                                         block_label = args_obj['label']
                                         old_str = args_obj['old_str']
                                         new_str = args_obj['new_str']
-                                        tool_msg = f"**Modifying memory block `{block_label}`**"
-                                        tool_msg += f"**New**\n{blockquote_message(new_str)}\n"
-                                        tool_msg += f"**Old**\n{blockquote_message(old_str)}\n"
+                                        tool_msg = f"(**{agent_name}** modifying memory)"
+                                        tool_msg += f"New:\n{blockquote_message(new_str)}\n"
+                                        tool_msg += f"Old:\n{blockquote_message(old_str)}\n"
+
+                                    elif tool_name == "run_code":
+                                        code = args_obj.get('code', '')
+                                        language = args_obj.get('language', 'python')
+                                        tool_msg = f"(**{agent_name}** ran code)"
+                                        tool_msg += f"\n```{language}\n{code}\n```"
 
                                     else:
-                                        tool_msg = f"🔧 Using tool: {tool_name}"
+                                        tool_msg = f"(**{agent_name}** using tool: {tool_name})"
                                         formatted_args = json.dumps(args_obj, indent=2)
                                         tool_msg += f"\n```json\n{formatted_args}\n```"
 
                                 except Exception as e:
                                     print(f"Error parsing tool arguments: {e}")
-                                    tool_msg = f"🔧 Using tool: {tool_name}\n```\n{arguments}\n```"
+                                    tool_msg = f"(**{agent_name}** using tool: {tool_name})\n```\n{arguments}\n```"
 
                                 send_telegram_message(chat_id, tool_msg)
                                 last_activity = current_time
@@ -942,6 +968,9 @@ def telegram_webhook(update: dict, request: Request):
             elif message_text.startswith('/clear-preferences'):
                 handle_clear_preferences_command(update, chat_id)
                 return {"ok": True}
+            elif message_text.startswith('/refresh'):
+                handle_refresh_command(update, chat_id)
+                return {"ok": True}
 
             # Send immediate feedback
             send_telegram_typing(chat_id)
@@ -977,6 +1006,33 @@ def get_chat_agent(chat_id: str) -> str:
 
     # Fall back to environment variable
     return os.environ.get("LETTA_AGENT_ID")
+
+def get_chat_agent_info(chat_id: str) -> dict:
+    """
+    Get both agent ID and name for a specific chat from volume storage
+    Returns dict with agent_id and agent_name, or None if not found
+    """
+    try:
+        agent_file_path = f"/data/chats/{chat_id}/agent.json"
+        if os.path.exists(agent_file_path):
+            with open(agent_file_path, "r") as f:
+                agent_data = json.load(f)
+                return {
+                    "agent_id": agent_data["agent_id"],
+                    "agent_name": agent_data.get("agent_name", "Agent")
+                }
+    except Exception as e:
+        print(f"Error reading chat agent info for {chat_id}: {e}")
+    
+    # Fall back to environment variable for agent_id
+    fallback_agent_id = os.environ.get("LETTA_AGENT_ID")
+    if fallback_agent_id:
+        return {
+            "agent_id": fallback_agent_id,
+            "agent_name": "Agent"  # Generic name for fallback
+        }
+    
+    return None
 
 def save_chat_agent(chat_id: str, agent_id: str, agent_name: str):
     """
@@ -1107,7 +1163,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
         parts = message_text.strip().split()
 
         if len(parts) < 2:
-            send_telegram_message(chat_id, "❌ Usage: `/login <api_key>` or `/login <api_key> <api_url>`\n\nExample: `/login sk-123456789`\n\nYour API key can be found at https://app.letta.com")
+            send_telegram_message(chat_id, "(error: usage is /login <api_key> - get your key from https://app.letta.com)")
             return
 
         api_key = parts[1].strip()
@@ -1163,10 +1219,9 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 except Exception as e:
                     print(f"Warning: Could not check for default agent: {e}")
 
-            response = f"👾 Welcome to Letta, {user_name}!\n\n"
-            response += f"{validation_message}\n\n"
-            response += project_set_message
-            response += agent_offer_message
+            response = f"👾 (welcome to letta, {user_name})"
+            if project_set_message or agent_offer_message:
+                response += f"\n\n{project_set_message}{agent_offer_message}"
 
             if not agent_offer_message:
                 response += "You can now:\n"
@@ -1179,7 +1234,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             send_telegram_message(chat_id, response)
         except Exception as storage_error:
             print(f"Failed to store credentials for user {user_id}: {storage_error}")
-            send_telegram_message(chat_id, "❌ Failed to store credentials. Please try again.")
+            send_telegram_message(chat_id, "(error: failed to store credentials)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -1201,13 +1256,69 @@ def handle_clear_preferences_command(update: dict, chat_id: str):
         if os.path.exists(preferences_path):
             os.remove(preferences_path)
             volume.commit()
-            send_telegram_message(chat_id, f"✅ **Preferences cleared** for @{user_name}\n\nYour preferences have been reset. You'll see the initial agent setup flow again.")
+            send_telegram_message(chat_id, "(preferences cleared)")
         else:
-            send_telegram_message(chat_id, f"ℹ️ No preferences found for @{user_name}")
+            send_telegram_message(chat_id, "(no preferences found)")
             
     except Exception as e:
         print(f"Error clearing preferences: {str(e)}")
-        send_telegram_message(chat_id, "❌ Error clearing preferences. Please try again.")
+        send_telegram_message(chat_id, "(error: unable to clear preferences)")
+
+def handle_refresh_command(update: dict, chat_id: str):
+    """
+    Handle /refresh command to update cached agent info
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        
+        # Get user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            raise
+
+        if not user_credentials:
+            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            return
+
+        # Get current agent info
+        agent_info = get_chat_agent_info(chat_id)
+        if not agent_info:
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
+            return
+            
+        agent_id = agent_info["agent_id"]
+        cached_name = agent_info["agent_name"]
+        
+        # Initialize Letta client and get current agent info
+        from letta_client import Letta
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        try:
+            current_agent = client.agents.retrieve(agent_id=agent_id)
+            current_name = current_agent.name
+            
+            if current_name != cached_name:
+                # Update the cache with new name
+                save_chat_agent(chat_id, agent_id, current_name)
+                send_telegram_message(chat_id, f"(agent name updated: {cached_name} → {current_name})")
+            else:
+                send_telegram_message(chat_id, f"(agent info is up to date: {current_name})")
+                
+        except Exception as agent_error:
+            send_telegram_message(chat_id, f"(error: unable to fetch agent info - {str(agent_error)[:50]})")
+            raise
+            
+    except Exception as e:
+        print(f"Error handling refresh command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to refresh agent info)")
+        # Re-raise the exception to preserve call stack in logs
+        raise
 
 def handle_logout_command(update: dict, chat_id: str):
     """
@@ -1223,7 +1334,7 @@ def handle_logout_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -1235,13 +1346,10 @@ def handle_logout_command(update: dict, chat_id: str):
         try:
             delete_user_credentials(user_id)
 
-            response = f"✅ **Logged Out Successfully**\n\n"
-            response += f"User @{user_name}, your credentials have been removed.\n"
-            response += "Use `/login <api_key>` to authenticate again."
-            send_telegram_message(chat_id, response)
+            send_telegram_message(chat_id, "(you've been logged out, goodbye)")
         except Exception as delete_error:
             print(f"Failed to delete credentials for user {user_id}: {delete_error}")
-            send_telegram_message(chat_id, "❌ Failed to remove credentials. Please try again.")
+            send_telegram_message(chat_id, "(error: failed to remove credentials)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -1267,13 +1375,13 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/login <api_key>` to authenticate first.")
+            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
             return
 
         # Get current project
         current_project = get_chat_project(chat_id)
         if not current_project:
-            send_telegram_message(chat_id, "❌ **No project configured**\n\nUse `/projects` to select a project first.")
+            send_telegram_message(chat_id, "(error: no project configured - use /projects to select one)")
             return
 
         project_id = current_project["project_id"]
@@ -1286,7 +1394,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             client = Letta(token=letta_api_key, base_url=letta_api_url)
 
             # Create the default agent
-            send_telegram_message(chat_id, "🤖 **Creating your Letta Assistant...**")
+            send_telegram_message(chat_id, "(creating assistant...)")
             try:
                 agent = create_default_agent(client, project_id, user_name)
             except Exception as create_error:
@@ -1344,15 +1452,16 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
                 if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                     content = getattr(event, 'content', '')
                     if content and content.strip():
-                        send_telegram_message(chat_id, content)
+                        prefixed_content = f"(**{agent.name}** says)\n\n{content}"
+                        send_telegram_message(chat_id, prefixed_content)
 
         except Exception as e:
             print(f"Error creating default agent: {e}")
-            send_telegram_message(chat_id, "❌ Error creating default agent. Please try again or use `/agents` to browse existing ones.")
+            send_telegram_message(chat_id, "(error: unable to create default agent)")
 
     except Exception as e:
         print(f"Error handling make-default-agent command: {str(e)}")
-        send_telegram_message(chat_id, "❌ Error processing command. Please try again.")
+        send_telegram_message(chat_id, "(error: unable to process command)")
 
 def handle_status_command(update: dict, chat_id: str):
     """
@@ -1368,17 +1477,12 @@ def handle_status_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             # Re-raise so infrastructure can track it
             raise
 
         if not credentials:
-            response = "🔐 **Authentication Status**\n\n"
-            response += f"User: @{user_name}\n"
-            response += "Status: **Not Authenticated** ❌\n\n"
-            response += "Use `/login <api_key>` to authenticate.\n"
-            response += "Get your API key at https://app.letta.com"
-            send_telegram_message(chat_id, response)
+            send_telegram_message(chat_id, "(not authenticated - use /login <api_key>)")
             return
 
         # Validate the stored credentials
@@ -1388,24 +1492,14 @@ def handle_status_command(update: dict, chat_id: str):
             credentials["api_url"]
         )
 
-        response = "🔐 **Authentication Status**\n\n"
-        response += f"User: @{user_name}\n"
-
         if is_valid:
-            response += "Status: **Authenticated** ✅\n"
-            response += f"API URL: {credentials['api_url']}\n"
-            response += f"{validation_message}\n\n"
-            response += "Use `/agent` to select an agent."
+            send_telegram_message(chat_id, "(authenticated successfully)")
         else:
-            response += "Status: **Invalid Credentials** ❌\n"
-            response += f"Error: {validation_message}\n\n"
-            response += "Please use `/login <api_key>` to update your credentials."
-
-        send_telegram_message(chat_id, response)
+            send_telegram_message(chat_id, f"(error: invalid credentials - {validation_message[:50]})")
 
     except Exception as e:
         print(f"Error handling status command: {str(e)}")
-        send_telegram_message(chat_id, "❌ Error checking authentication status. Please try again.")
+        send_telegram_message(chat_id, "(error: unable to check authentication status)")
 
 def handle_start_command(update: dict, chat_id: str):
     """
@@ -1422,61 +1516,19 @@ def handle_start_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             # Re-raise so infrastructure can track it
             raise
 
         if credentials:
             # User is already authenticated - show quick overview
-            response = f"👋 **Welcome back, {first_name}!**\n\n"
-            response += "You're already authenticated and ready to go!\n\n"
-            response += "**Quick Actions:**\n"
-            response += "• `/agent` - View current agent info\n"
-            response += "• `/agents` - List and select agents\n"
-            response += "• `/tool` - Manage your agent's tools\n"
-            response += "• `/shortcut` - Manage agent shortcuts for quick switching\n"
-            response += "• `/status` - Check your authentication status\n"
-            response += "• `/help` - See all available commands\n\n"
-            response += "Just type a message to start chatting with your agent!"
+            response = f"(welcome back {first_name} - you're ready to chat)"
         else:
-            # New user - provide complete setup guide
-            response = f"🚀 **Welcome to the Letta Telegram Bot, {first_name}!**\n\n"
-            response += "This bot connects you to your personal Letta AI agents. Here's how to get started:\n\n"
+            # New user - provide simple setup guide
+            response = f"(welcome, {first_name}. get your API key here: https://app.letta.com)"
 
-            response += "**Step 1: Get Your Letta API Key** 🔑\n"
-            response += "1. Visit https://app.letta.com\n"
-            response += "2. Sign up or log in to your account\n"
-            response += "3. Create at least one AI agent\n"
-            response += "4. Copy your API key from the settings\n\n"
 
-            response += "**Step 2: Authenticate** 🔐\n"
-            response += "Send me your API key using this command:\n"
-            response += "`/login sk-your-api-key-here`\n\n"
-            response += "⚠️ **Note**: Your message with the API key will be automatically deleted for security.\n\n"
 
-            response += "**Step 3: Select an Agent** 🤖\n"
-            response += "After logging in:\n"
-            response += "• Use `/agents` to see your available agents\n"
-            response += "• Use `/agent <agent_id>` to select one\n\n"
-
-            response += "**Step 4: Customize Your Agent (Optional)** 🔧\n"
-            response += "• Use `/tool` to see and manage available tools\n"
-            response += "• Use `/shortcut <name> <agent_id>` to create shortcuts for quick switching\n"
-            response += "• Use `/switch <name>` to quickly switch between agents\n\n"
-
-            response += "**Step 5: Start Chatting!** 💬\n"
-            response += "Once you've selected an agent, just send any message to start a conversation.\n\n"
-
-            response += "**Need Help?**\n"
-            response += "• `/help` - See all commands\n"
-            response += "• `/status` - Check your setup progress\n\n"
-
-            response += "**Privacy & Security** 🛡️\n"
-            response += "• Your API key is encrypted and stored securely\n"
-            response += "• Only you can access your agents and data\n"
-            response += "• Use `/logout` anytime to remove your credentials\n\n"
-
-            response += "Ready to get started? Get your API key from https://app.letta.com and use `/login`!"
 
         send_telegram_message(chat_id, response)
 
@@ -1501,7 +1553,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -1596,9 +1648,9 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
             success = save_chat_agent(chat_id, new_agent_id, agent.name)
 
             if success:
-                send_telegram_message(chat_id, f"✅ Agent set to: `{new_agent_id}` ({agent.name})\n\nYou can now chat with this agent!")
+                send_telegram_message(chat_id, f"(switched to {agent.name})")
             else:
-                send_telegram_message(chat_id, "❌ Failed to save agent selection. Please try again.")
+                send_telegram_message(chat_id, "(error: failed to save agent selection)")
 
         except ApiError as e:
             if hasattr(e, 'status_code') and e.status_code == 404:
@@ -1619,69 +1671,24 @@ def handle_help_command(chat_id: str):
     """
     Handle /help command to show available commands
     """
-    help_text = """🤖 **Letta Telegram Bot Commands**
+    help_text = """Commands:
+/start - Setup guide
+/login <api_key> - Authenticate  
+/logout - Remove credentials
+/status - Check authentication
+/project - Show/switch project
+/projects - List projects
+/agent - Show/switch agent
+/agents - List agents
+/make-default-agent - Create default agent
+/ade - Get agent web link
+/tool - Manage tools
+/shortcut - Manage shortcuts
+/switch <name> - Quick switch
+/clear-preferences - Reset preferences
+/refresh - Update cached agent info
+/help - Show commands
 
-**Getting Started:**
-• `/start` - Complete setup guide for new users
-
-**Authentication Commands:**
-• `/login <api_key>` - Authenticate with your Letta API key
-• `/logout` - Remove your stored credentials
-• `/status` - Check your authentication status
-
-**Project Commands:**
-• `/project` - Show current project information
-• `/project <id>` - Switch to a specific project
-• `/projects` - List all available projects
-• `/projects <name>` - Search projects by name
-
-**Agent Commands:**
-• `/agent` - Show current agent information
-• `/agent <id>` - Switch to a specific agent
-• `/agents` - List all available agents
-• `/make-default-agent` - Create a helpful default agent to get started
-• `/ade` - Get link to current agent in the agent development environment (ADE)
-
-**Tool Management:**
-• `/tool` or `/tool list` - List attached and available tools
-• `/tool attach <name>` - Attach a tool to your agent
-• `/tool detach <name>` - Detach a tool from your agent
-**Debug Commands:**
-• `/clear-preferences` - Clear your preferences to reset the initial setup flow
-
-**Shortcuts:**
-• `/shortcut` - List your saved shortcuts
-• `/shortcut <name> <agent_id>` - Create shortcut for quick switching
-• `/shortcut delete <name>` - Delete a shortcut
-• `/switch <name>` - Quickly switch to agent using shortcut
-
-**Other Commands:**
-• `/help` - Show this help message
-
-**Quick Setup:**
-1. Use `/start` for a complete setup walkthrough
-2. Get your API key from https://app.letta.com
-3. Use `/login <api_key>` to authenticate
-4. Use `/projects` to see available projects, then `/project <id>` to select one
-5. Use `/agents` to see available agents, then `/agent <id>` to select one
-6. Start chatting!
-
-**Examples:**
-• `/start` - Get step-by-step setup instructions
-• `/login sk-123456789` - Authenticate with your API key
-• `/projects` - Lists all available projects in a table
-• `/project proj-abc123` - Switches to project with ID "proj-abc123"
-• `/agent` - Shows current agent information and details
-• `/agents` - Lists all available agents with their IDs and names
-• `/agent abc123` - Switches to agent with ID "abc123"
-• `/tool` - Shows all attached and available tools
-• `/tool attach web_search` - Attaches the web_search tool to your agent
-• `/tool detach web_search` - Removes the web_search tool from your agent
-• `/shortcut herald abc123` - Creates shortcut "herald" for agent abc123
-• `/switch herald` - Quickly switches to the agent saved as "herald"
-• `/shortcut delete herald` - Removes the "herald" shortcut
-
-**Note:** Your credentials and agent selections are saved securely and persist across sessions.
 """
     send_telegram_message(chat_id, help_text)
 
@@ -1748,7 +1755,7 @@ def handle_agents_command(update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
@@ -1771,17 +1778,14 @@ def handle_agents_command(update: dict, chat_id: str):
             # Initialize Letta client to list agents
             client = Letta(token=letta_api_key, base_url=letta_api_url)
 
-            # Get current agent for this chat
-            current_agent_id = get_chat_agent(chat_id)
+            # Get current agent info for this chat
+            current_agent_info = get_chat_agent_info(chat_id)
+            current_agent_id = None
             current_agent_name = "Unknown"
-
-            # Try to get current agent details
-            if current_agent_id:
-                try:
-                    current_agent = client.agents.retrieve(agent_id=current_agent_id)
-                    current_agent_name = current_agent.name
-                except:
-                    pass
+            
+            if current_agent_info:
+                current_agent_id = current_agent_info["agent_id"]
+                current_agent_name = current_agent_info["agent_name"]
 
             # List all available agents in the current project
             agents = client.agents.list(project_id=project_id)
@@ -1839,7 +1843,7 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
@@ -1862,7 +1866,7 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
         agent_id = get_chat_agent(chat_id)
 
         if not agent_id:
-            send_telegram_message(chat_id, "❌ **No agent configured**\n\nUse `/agents` to see available agents and `/agent <id>` to select one.")
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
             return
 
         # Initialize Letta client
@@ -2084,7 +2088,7 @@ def handle_shortcut_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
@@ -2141,7 +2145,7 @@ def handle_shortcut_list(user_id: str, chat_id: str):
         shortcuts = get_user_shortcuts(user_id)
 
         if not shortcuts:
-            send_telegram_message(chat_id, "**Shortcuts:**\n\nNo shortcuts saved yet.\n\n**Usage:**\n• `/shortcut <name> <agent_id>` - Create shortcut\n• `/switch <name>` - Quick switch to agent\n\n**Example:**\n`/shortcut herald abc123`")
+            send_telegram_message(chat_id, "(shortcuts)\n\nNo shortcuts saved yet.\n\nUsage:\n`/shortcut <name> <agent_id>` - Create shortcut\n`/switch <name>` - Quick switch to agent\n\nExample:\n`/shortcut herald abc123`")
             return
 
         # Get user credentials to fetch agent details
@@ -2149,20 +2153,20 @@ def handle_shortcut_list(user_id: str, chat_id: str):
             user_credentials = get_user_credentials(user_id)
             if not user_credentials:
                 # Fallback to basic display if no credentials
-                response = "**Shortcuts:**\n\n"
+                response = "(shortcuts)\n\n"
                 for shortcut_name, shortcut_data in shortcuts.items():
                     agent_name = shortcut_data.get("agent_name", "Unknown")
-                    response += f"{shortcut_name}\n  {agent_name}\n\n"
-                response += "**Usage:**\n• `/switch <name>` - Quick switch to agent"
+                    response += f"**{agent_name}** (`{shortcut_name}`)\n\n"
+                response += "Usage:\n`/switch <name>` - Quick switch to agent"
                 send_telegram_message(chat_id, response)
                 return
         except Exception:
             # Fallback if credentials can't be retrieved
-            response = "**Shortcuts:**\n\n"
+            response = "(shortcuts)\n\n"
             for shortcut_name, shortcut_data in shortcuts.items():
                 agent_name = shortcut_data.get("agent_name", "Unknown")
-                response += f"{shortcut_name}\n  {agent_name}\n\n"
-            response += "**Usage:**\n• `/switch <name>` - Quick switch to agent"
+                response += f"**{agent_name}** (`{shortcut_name}`)\n\n"
+            response += "Usage:\n`/switch <name>` - Quick switch to agent"
             send_telegram_message(chat_id, response)
             return
 
@@ -2176,7 +2180,7 @@ def handle_shortcut_list(user_id: str, chat_id: str):
         letta_api_url = user_credentials["api_url"]
         client = Letta(token=letta_api_key, base_url=letta_api_url)
 
-        response = "**Shortcuts:**\n\n"
+        response = "(shortcuts)\n\n"
 
         for shortcut_name, shortcut_data in shortcuts.items():
             agent_id = shortcut_data["agent_id"]
@@ -2188,10 +2192,9 @@ def handle_shortcut_list(user_id: str, chat_id: str):
                 agent_name = agent.name
                 agent_description = getattr(agent, 'description', None) or getattr(agent, 'system', '')
 
-                response += f"{shortcut_name}\n"
-                response += f"  {agent_name}\n"
+                response += f"**{agent_name}** (`{shortcut_name}`)\n"
                 if agent_description:
-                    response += f"  {agent_description}\n"
+                    response += f"> {agent_description}\n"
                 response += "\n"
 
                 # Update shortcut if agent name changed
@@ -2200,19 +2203,16 @@ def handle_shortcut_list(user_id: str, chat_id: str):
 
             except ApiError as e:
                 if hasattr(e, 'status_code') and e.status_code == 404:
-                    response += f"{shortcut_name}\n"
-                    response += f"  {stored_agent_name} (not found)\n\n"
+                    response += f"**{stored_agent_name}** (`{shortcut_name}`) (not found)\n\n"
                 else:
-                    response += f"{shortcut_name}\n"
-                    response += f"  {stored_agent_name} (unavailable)\n\n"
+                    response += f"**{stored_agent_name}** (`{shortcut_name}`) (unavailable)\n\n"
             except Exception:
-                response += f"{shortcut_name}\n"
-                response += f"  {stored_agent_name} (unavailable)\n\n"
+                response += f"**{stored_agent_name}** (`{shortcut_name}`) (unavailable)\n\n"
 
-        response += "**Usage:**\n"
-        response += "• `/switch <name>` - Quick switch to agent\n"
-        response += "• `/shortcut <name> <agent_id>` - Create/update shortcut\n"
-        response += "• `/shortcut delete <name>` - Delete shortcut"
+        response += "Usage:\n"
+        response += "`/switch <name>` - Quick switch to agent\n"
+        response += "`/shortcut <name> <agent_id>` - Create/update shortcut\n"
+        response += "`/shortcut delete <name>` - Delete shortcut"
 
         send_telegram_message(chat_id, response)
 
@@ -2307,7 +2307,7 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
@@ -2411,7 +2411,7 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
@@ -2492,7 +2492,7 @@ def handle_project_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` again.")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             raise
 
         if not user_credentials:
