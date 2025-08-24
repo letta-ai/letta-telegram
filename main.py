@@ -2064,15 +2064,21 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
             return
 
         # Build response message
-        response = "🔧 **Tool Management**\n\n"
+        response = "(tools)\n\n"
 
         # Show attached tools
         if attached_tools:
-            response += f"**Attached Tools ({len(attached_tools)}):**\n"
+            response += f"Attached ({len(attached_tools)}):\n"
             for tool in attached_tools:
-                response += f"🟢 `{tool.name}` - {tool.description or 'No description'}\n"
+                # Truncate description to first sentence or 100 chars
+                desc = tool.description or 'No description'
+                if '.' in desc:
+                    desc = desc.split('.')[0] + '.'
+                elif len(desc) > 100:
+                    desc = desc[:97] + '...'
+                response += f"- `{tool.name}` - {desc}\n"
         else:
-            response += "**Attached Tools:** None\n"
+            response += "Attached: none\n"
 
         response += "\n"
 
@@ -2081,17 +2087,23 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
         available_tools = [tool for tool in all_tools if tool.id not in attached_tool_ids]
 
         if available_tools:
-            response += f"**Available Tools ({len(available_tools)}):**\n"
+            response += f"Available ({len(available_tools)}):\n"
             for tool in available_tools[:10]:  # Limit to first 10 to avoid message length issues
-                response += f"⚪ `{tool.name}` - {tool.description or 'No description'}\n"
+                # Truncate description to first sentence or 100 chars
+                desc = tool.description or 'No description'
+                if '.' in desc:
+                    desc = desc.split('.')[0] + '.'
+                elif len(desc) > 100:
+                    desc = desc[:97] + '...'
+                response += f"- `{tool.name}` - {desc}\n"
             if len(available_tools) > 10:
-                response += f"... and {len(available_tools) - 10} more tools\n"
+                response += f"... and {len(available_tools) - 10} more\n"
         else:
-            response += "**Available Tools:** All tools are already attached\n"
+            response += "Available: all tools attached\n"
 
-        response += "\n**Usage:**\n"
-        response += "• `/tool attach <name>` - Attach a tool\n"
-        response += "• `/tool detach <name>` - Detach a tool"
+        response += "\nUsage:\n"
+        response += "`/tool attach <name>` - Attach tool\n"
+        response += "`/tool detach <name>` - Detach tool"
 
         send_telegram_message(chat_id, response)
 
