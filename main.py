@@ -2056,9 +2056,9 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
             send_telegram_message(chat_id, f"❌ Error getting attached tools: {str(e)}")
             return
 
-        # Get all available tools in the current project
+        # Get all available tools in the organization
         try:
-            all_tools = client.tools.list(project_id=project_id)
+            all_tools = client.tools.list()
         except Exception as e:
             send_telegram_message(chat_id, f"❌ Error getting available tools: {str(e)}")
             return
