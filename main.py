@@ -968,6 +968,12 @@ def telegram_webhook(update: dict, request: Request):
             elif message_text.startswith('/clear-preferences'):
                 handle_clear_preferences_command(update, chat_id)
                 return {"ok": True}
+            elif message_text.startswith('/blocks'):
+                handle_blocks_command(update, chat_id)
+                return {"ok": True}
+            elif message_text.startswith('/block'):
+                handle_block_command(message_text, update, chat_id)
+                return {"ok": True}
             elif message_text.startswith('/refresh'):
                 handle_refresh_command(update, chat_id)
                 return {"ok": True}
@@ -1558,7 +1564,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "(authentication required: get your API key from https://app.letta.com then use /login <api_key>)")
             return
 
         # Use user-specific credentials
@@ -1568,7 +1574,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         # Get current project for this chat
         current_project = get_chat_project(chat_id)
         if not current_project:
-            send_telegram_message(chat_id, "❌ **No project set**\n\nUse `/projects` to see available projects and `/project <id>` to select one.")
+            send_telegram_message(chat_id, "(error: no project configured - use /projects to select one)")
             return
 
         project_id = current_project["project_id"]
@@ -1583,7 +1589,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
                 current_agent_id = get_chat_agent(chat_id)
 
                 if not current_agent_id:
-                    send_telegram_message(chat_id, "**Current Agent:** None set\n\nUse `/agents` to see available agents and `/agent <agent_id>` to select one.")
+                    send_telegram_message(chat_id, "(no agent configured - use /agents to select one)")
                     return
 
                 # Initialize Letta client to get agent details
@@ -1603,14 +1609,13 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
                         tools_count = "Unknown"
 
                     # Build response message
-                    response = f"**Current Agent:** {agent_name}\n\n"
-                    response += f"**ID:** `{current_agent_id}`\n"
+                    response = f"The current agent is **{agent_name}**, with {tools_count} tools. \n\nDescription:\n"
                     if agent_description:
-                        response += f"**Description:** {agent_description}\n"
-                    response += f"**Attached Tools:** {tools_count}\n\n"
-                    response += "**Usage:**\n"
-                    response += "• `/agents` - List all available agents\n"
-                    response += "• `/agent <agent_id>` - Switch to different agent"
+                        response += f"> {agent_description}\n\n"
+                    response += f"\nAgent ID: `{current_agent_id}``\n\n"
+                    response += "Usage:\n"
+                    response += "`/agents` - List all available agents\n"
+                    response += "`/agent <agent_id>` - Switch to different agent"
 
                     send_telegram_message(chat_id, response)
                     return
@@ -1667,6 +1672,134 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         # Re-raise the exception to preserve call stack in logs
         raise
 
+def handle_blocks_command(update: dict, chat_id: str):
+    """
+    Handle /blocks command to list all memory blocks
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        
+        # Get user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            raise
+
+        if not user_credentials:
+            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            return
+
+        # Get current agent info
+        agent_info = get_chat_agent_info(chat_id)
+        if not agent_info:
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
+            return
+            
+        agent_id = agent_info["agent_id"]
+        
+        # Initialize Letta client
+        from letta_client import Letta
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        try:
+            # Get all memory blocks
+            blocks = client.agents.blocks.list(agent_id=agent_id)
+            
+            if not blocks:
+                send_telegram_message(chat_id, "(no memory blocks found)")
+                return
+                
+            response = "(memory blocks)\n\n"
+            for block in blocks:
+                block_label = getattr(block, 'label', 'unknown')
+                response += f"- `{block_label}`\n"
+                
+            response += f"\nUse `/block <label>` to view a specific block"
+            send_telegram_message(chat_id, response)
+            
+        except Exception as api_error:
+            send_telegram_message(chat_id, f"(error: unable to fetch memory blocks - {str(api_error)[:50]})")
+            raise
+            
+    except Exception as e:
+        print(f"Error handling blocks command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to list memory blocks)")
+        raise
+
+def handle_block_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /block <label> command to view a specific memory block
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+        
+        # Parse the command to get the block label
+        parts = message.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            send_telegram_message(chat_id, "(error: usage is /block <label> - use /blocks to see available labels)")
+            return
+            
+        block_label = parts[1].strip()
+        
+        # Get user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            raise
+
+        if not user_credentials:
+            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            return
+
+        # Get current agent info
+        agent_info = get_chat_agent_info(chat_id)
+        if not agent_info:
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
+            return
+            
+        agent_id = agent_info["agent_id"]
+        agent_name = agent_info["agent_name"]
+        
+        # Initialize Letta client
+        from letta_client import Letta
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        try:
+            # Get the specific memory block
+            block = client.agents.blocks.retrieve(agent_id=agent_id, block_label=block_label)
+            block_value = getattr(block, 'value', '')
+            
+            if not block_value:
+                send_telegram_message(chat_id, f"(error: block '{block_label}' is empty)")
+                return
+                
+            response = f"(**{agent_name}** `{block_label}`)\n\n{blockquote_message(block_value)}"
+            send_telegram_message(chat_id, response)
+            
+        except Exception as api_error:
+            # Check if it's a "not found" error
+            error_msg = str(api_error).lower()
+            if "not found" in error_msg or "404" in error_msg:
+                send_telegram_message(chat_id, f"(error: block '{block_label}' not found - use /blocks to see available blocks)")
+            else:
+                send_telegram_message(chat_id, f"(error: unable to fetch block - {str(api_error)[:50]})")
+            raise
+            
+    except Exception as e:
+        print(f"Error handling block command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to view memory block)")
+        raise
+
 def handle_help_command(chat_id: str):
     """
     Handle /help command to show available commands
@@ -1685,6 +1818,8 @@ def handle_help_command(chat_id: str):
 /tool - Manage tools
 /shortcut - Manage shortcuts
 /switch <name> - Quick switch
+/blocks - List memory blocks
+/block <label> - View memory block
 /clear-preferences - Reset preferences
 /refresh - Update cached agent info
 /help - Show commands
@@ -2385,7 +2520,7 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
         success = save_chat_agent(chat_id, agent_id, agent_name)
 
         if success:
-            send_telegram_message(chat_id, f"✅ **Switched via shortcut `{shortcut_name}`**\n\nAgent: `{agent_id}` ({agent_name})\n\nYou can now chat with this agent!")
+            send_telegram_message(chat_id, f"(switched to **{agent_name}**)")
         else:
             send_telegram_message(chat_id, "❌ Failed to switch agent. Please try again.")
 
