@@ -953,6 +953,9 @@ def telegram_webhook(update: dict, request: Request):
             elif message_text.startswith('/tool'):
                 handle_tool_command(message_text, update, chat_id)
                 return {"ok": True}
+            elif message_text.startswith('/telegram-notify'):
+                handle_telegram_notify_command(message_text, update, chat_id)
+                return {"ok": True}
             elif message_text.startswith('/shortcut'):
                 handle_shortcut_command(message_text, update, chat_id)
                 return {"ok": True}
@@ -1816,6 +1819,7 @@ def handle_help_command(chat_id: str):
 /make-default-agent - Create default agent
 /ade - Get agent web link
 /tool - Manage tools
+/telegram-notify - Enable proactive notifications
 /shortcut - Manage shortcuts
 /switch <name> - Quick switch
 /blocks - List memory blocks
@@ -2215,6 +2219,213 @@ def handle_tool_detach(client, agent_id: str, tool_name: str, chat_id: str):
     except Exception as e:
         print(f"Error in handle_tool_detach: {str(e)}")
         send_telegram_message(chat_id, f"❌ Error detaching tool: {str(e)}")
+        raise
+
+def handle_telegram_notify_command(message_text: str, update: dict, chat_id: str):
+    """
+    Handle /telegram-notify command to enable/disable proactive notifications
+    """
+    try:
+        from letta_client import Letta
+        from letta_client.core.api_error import ApiError
+        
+        # Extract user ID from the update
+        if "message" not in update or "from" not in update["message"]:
+            send_telegram_message(chat_id, "❌ Unable to extract user information")
+            return
+            
+        telegram_user_id = str(update["message"]["from"]["id"])
+        
+        # Parse command argument
+        parts = message_text.strip().split()
+        subcommand = parts[1].lower() if len(parts) > 1 else "status"
+        
+        if subcommand not in ["enable", "disable", "status"]:
+            send_telegram_message(chat_id, """❌ **Invalid command**
+            
+Usage:
+• `/telegram-notify enable` - Enable proactive notifications
+• `/telegram-notify disable` - Disable proactive notifications  
+• `/telegram-notify status` - Check current status
+• `/telegram-notify` - Check current status (default)""")
+            return
+
+        # Get user credentials
+        try:
+            credentials = get_user_credentials(telegram_user_id)
+            if not credentials:
+                send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+                return
+            
+            letta_api_key = credentials["letta_api_key"]
+            letta_api_url = credentials.get("letta_api_url", "https://api.letta.com")
+        except Exception as e:
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            return
+
+        # Get current agent
+        agent_info = get_chat_agent_info(chat_id)
+        if not agent_info:
+            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
+            return
+            
+        agent_id = agent_info["agent_id"]
+        agent_name = agent_info["agent_name"]
+
+        # Initialize Letta client
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        if subcommand == "status":
+            # Check tool attachment status
+            try:
+                attached_tools = client.agents.tools.list(agent_id=agent_id)
+                notify_tool_attached = any(tool.name == "notify_via_telegram" for tool in attached_tools)
+                
+                # Get agent to check environment variables
+                agent = client.agents.get(agent_id=agent_id)
+                env_vars = agent.tool_exec_environment_variables or []
+                
+                has_bot_token = any(var.key == "TELEGRAM_BOT_TOKEN" for var in env_vars)
+                has_chat_id = any(var.key == "TELEGRAM_CHAT_ID" for var in env_vars)
+                
+                status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id) else "❌"
+                
+                response = f"""{status_emoji} **Telegram Notifications Status**
+
+**Agent:** {agent_name}
+**Tool attached:** {"✅ Yes" if notify_tool_attached else "❌ No"}
+**Environment configured:** {"✅ Yes" if (has_bot_token and has_chat_id) else "❌ No"}
+
+Use `/telegram-notify enable` to set up notifications."""
+                
+                send_telegram_message(chat_id, response)
+                
+            except Exception as e:
+                send_telegram_message(chat_id, f"❌ Error checking status: {str(e)}")
+            return
+        
+        elif subcommand == "enable":
+            send_telegram_typing(chat_id)
+            
+            # Step 1: Check if notify_via_telegram tool exists and attach it
+            try:
+                # Get project ID
+                project_info = get_chat_project(chat_id)
+                if not project_info:
+                    send_telegram_message(chat_id, "❌ No project configured. Please select a project first.")
+                    return
+                project_id = project_info["project_id"]
+                
+                # Search for notify_via_telegram tool
+                all_tools = client.tools.list(project_id=project_id, name="notify_via_telegram")
+                if not all_tools:
+                    send_telegram_message(chat_id, """❌ **notify_via_telegram tool not found**
+                    
+Please register the tool first by running:
+```
+python register_telegram_tool.py
+```
+
+Then use `/tool attach notify_via_telegram` or try this command again.""")
+                    return
+                
+                notify_tool = all_tools[0]
+                
+                # Check if already attached
+                attached_tools = client.agents.tools.list(agent_id=agent_id)
+                if not any(tool.id == notify_tool.id for tool in attached_tools):
+                    # Attach the tool
+                    client.agents.tools.attach(agent_id=agent_id, tool_id=notify_tool.id)
+                
+            except Exception as e:
+                send_telegram_message(chat_id, f"❌ Error attaching tool: {str(e)}")
+                return
+            
+            # Step 2: Set up environment variables
+            try:
+                # Get current agent configuration
+                agent = client.agents.get(agent_id=agent_id)
+                current_env_vars = agent.tool_exec_environment_variables or []
+                
+                # Remove any existing TELEGRAM vars and add new ones
+                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                
+                # Add Telegram environment variables
+                bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+                if not bot_token:
+                    send_telegram_message(chat_id, "❌ TELEGRAM_BOT_TOKEN not available in server environment")
+                    return
+                
+                new_env_vars = filtered_vars + [
+                    {
+                        "key": "TELEGRAM_BOT_TOKEN",
+                        "value": bot_token,
+                        "description": "Bot token for sending Telegram messages"
+                    },
+                    {
+                        "key": "TELEGRAM_CHAT_ID",
+                        "value": chat_id,
+                        "description": "Chat ID for this Telegram conversation"
+                    }
+                ]
+                
+                # Update agent with new environment variables
+                client.agents.update(
+                    agent_id=agent_id,
+                    tool_exec_environment_variables=new_env_vars
+                )
+                
+                send_telegram_message(chat_id, f"""✅ **Telegram Notifications Enabled**
+
+**Agent:** {agent_name}
+**Tool:** notify_via_telegram attached
+**Environment:** Configured for this chat
+
+Your agent can now send you proactive notifications using the `notify_via_telegram` tool!""")
+                
+            except Exception as e:
+                send_telegram_message(chat_id, f"❌ Error configuring environment: {str(e)}")
+                return
+        
+        elif subcommand == "disable":
+            send_telegram_typing(chat_id)
+            
+            try:
+                # Step 1: Detach the tool
+                attached_tools = client.agents.tools.list(agent_id=agent_id)
+                notify_tool = next((tool for tool in attached_tools if tool.name == "notify_via_telegram"), None)
+                
+                if notify_tool:
+                    client.agents.tools.detach(agent_id=agent_id, tool_id=notify_tool.id)
+                
+                # Step 2: Remove environment variables
+                agent = client.agents.get(agent_id=agent_id)
+                current_env_vars = agent.tool_exec_environment_variables or []
+                
+                # Remove Telegram-related environment variables
+                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                
+                # Update agent
+                client.agents.update(
+                    agent_id=agent_id,
+                    tool_exec_environment_variables=filtered_vars
+                )
+                
+                send_telegram_message(chat_id, f"""✅ **Telegram Notifications Disabled**
+
+**Agent:** {agent_name}
+**Tool:** notify_via_telegram detached
+**Environment:** Telegram variables removed
+
+Use `/telegram-notify enable` to re-enable notifications.""")
+                
+            except Exception as e:
+                send_telegram_message(chat_id, f"❌ Error disabling notifications: {str(e)}")
+                return
+
+    except Exception as e:
+        print(f"Error in handle_telegram_notify_command: {str(e)}")
+        send_telegram_message(chat_id, f"❌ Error handling telegram-notify command: {str(e)}")
         raise
 
 def handle_shortcut_command(message: str, update: dict, chat_id: str):
