@@ -2282,7 +2282,7 @@ Usage:
                 notify_tool_attached = any(tool.name == "notify_via_telegram" for tool in attached_tools)
                 
                 # Get agent to check environment variables
-                agent = client.agents.get(agent_id=agent_id)
+                agent = client.agents.retrieve(agent_id=agent_id)
                 env_vars = agent.tool_exec_environment_variables or []
                 
                 has_bot_token = any(var.key == "TELEGRAM_BOT_TOKEN" for var in env_vars)
@@ -2344,7 +2344,7 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
             # Step 2: Set up environment variables
             try:
                 # Get current agent configuration
-                agent = client.agents.get(agent_id=agent_id)
+                agent = client.agents.retrieve(agent_id=agent_id)
                 current_env_vars = agent.tool_exec_environment_variables or []
                 
                 # Remove any existing TELEGRAM vars and add new ones
@@ -2400,7 +2400,7 @@ Your agent can now send you proactive notifications using the `notify_via_telegr
                     client.agents.tools.detach(agent_id=agent_id, tool_id=notify_tool.id)
                 
                 # Step 2: Remove environment variables
-                agent = client.agents.get(agent_id=agent_id)
+                agent = client.agents.retrieve(agent_id=agent_id)
                 current_env_vars = agent.tool_exec_environment_variables or []
                 
                 # Remove Telegram-related environment variables
