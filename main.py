@@ -2283,10 +2283,10 @@ Usage:
                 
                 # Get agent to check environment variables
                 agent = client.agents.retrieve(agent_id=agent_id)
-                env_vars = agent.tool_exec_environment_variables or []
+                env_vars = agent.tool_exec_environment_variables or {}
                 
-                has_bot_token = any(var.key == "TELEGRAM_BOT_TOKEN" for var in env_vars)
-                has_chat_id = any(var.key == "TELEGRAM_CHAT_ID" for var in env_vars)
+                has_bot_token = "TELEGRAM_BOT_TOKEN" in env_vars
+                has_chat_id = "TELEGRAM_CHAT_ID" in env_vars
                 
                 status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id) else "❌"
                 
@@ -2338,10 +2338,7 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
             try:
                 # Get current agent configuration
                 agent = client.agents.retrieve(agent_id=agent_id)
-                current_env_vars = agent.tool_exec_environment_variables or []
-                
-                # Remove any existing TELEGRAM vars and add new ones
-                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                current_env_vars = agent.tool_exec_environment_variables or {}
                 
                 # Add Telegram environment variables
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -2350,18 +2347,10 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
                     send_telegram_message(chat_id, "❌ TELEGRAM_BOT_TOKEN not available in server environment")
                     return
                 
-                new_env_vars = filtered_vars + [
-                    {
-                        "key": "TELEGRAM_BOT_TOKEN",
-                        "value": bot_token,
-                        "description": "Bot token for sending Telegram messages"
-                    },
-                    {
-                        "key": "TELEGRAM_CHAT_ID",
-                        "value": chat_id,
-                        "description": "Chat ID for this Telegram conversation"
-                    }
-                ]
+                # Create new environment variables dictionary
+                new_env_vars = current_env_vars.copy()
+                new_env_vars["TELEGRAM_BOT_TOKEN"] = bot_token
+                new_env_vars["TELEGRAM_CHAT_ID"] = chat_id
                 
                 # Update agent with new environment variables
                 client.agents.modify(
@@ -2394,10 +2383,10 @@ Your agent can now send you proactive notifications using the `notify_via_telegr
                 
                 # Step 2: Remove environment variables
                 agent = client.agents.retrieve(agent_id=agent_id)
-                current_env_vars = agent.tool_exec_environment_variables or []
+                current_env_vars = agent.tool_exec_environment_variables or {}
                 
                 # Remove Telegram-related environment variables
-                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                filtered_vars = {k: v for k, v in current_env_vars.items() if k not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]}
                 
                 # Update agent
                 client.agents.modify(
