@@ -2257,8 +2257,8 @@ Usage:
                 send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
                 return
             
-            letta_api_key = credentials["letta_api_key"]
-            letta_api_url = credentials.get("letta_api_url", "https://api.letta.com")
+            letta_api_key = credentials["api_key"]
+            letta_api_url = credentials.get("api_url", "https://api.letta.com")
         except Exception as e:
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
             return
@@ -2287,8 +2287,9 @@ Usage:
                 
                 has_bot_token = any(var.key == "TELEGRAM_BOT_TOKEN" for var in env_vars)
                 has_chat_id = any(var.key == "TELEGRAM_CHAT_ID" for var in env_vars)
+                has_letta_key = any(var.key == "TELEGRAM_LETTA_API_KEY" for var in env_vars)
                 
-                status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id) else "❌"
+                status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id and has_letta_key) else "❌"
                 
                 response = f"""{status_emoji} **Telegram Notifications Status**
 
@@ -2348,12 +2349,18 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
                 current_env_vars = agent.tool_exec_environment_variables or []
                 
                 # Remove any existing TELEGRAM vars and add new ones
-                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_LETTA_API_KEY"]]
                 
                 # Add Telegram environment variables
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+                letta_api_key = os.environ.get("TELEGRAM_LETTA_API_KEY")
+                
                 if not bot_token:
                     send_telegram_message(chat_id, "❌ TELEGRAM_BOT_TOKEN not available in server environment")
+                    return
+                
+                if not letta_api_key:
+                    send_telegram_message(chat_id, "❌ TELEGRAM_LETTA_API_KEY not available in server environment")
                     return
                 
                 new_env_vars = filtered_vars + [
@@ -2366,6 +2373,11 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
                         "key": "TELEGRAM_CHAT_ID",
                         "value": chat_id,
                         "description": "Chat ID for this Telegram conversation"
+                    },
+                    {
+                        "key": "TELEGRAM_LETTA_API_KEY",
+                        "value": letta_api_key,
+                        "description": "Letta API key for tool operations"
                     }
                 ]
                 
@@ -2403,7 +2415,7 @@ Your agent can now send you proactive notifications using the `notify_via_telegr
                 current_env_vars = agent.tool_exec_environment_variables or []
                 
                 # Remove Telegram-related environment variables
-                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
+                filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_LETTA_API_KEY"]]
                 
                 # Update agent
                 client.agents.update(
