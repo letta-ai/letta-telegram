@@ -78,11 +78,11 @@ def register_tool(api_key: Optional[str] = None):
         dict: Registration status information
     """
     # Get API key
-    api_key = api_key or os.getenv("TELEGRAM_LETTA_API_KEY")
+    api_key = api_key or os.getenv("LETTA_API_KEY")
     if not api_key:
         return {
             "status": "error",
-            "message": "TELEGRAM_LETTA_API_KEY environment variable not found. Please set it or pass api_key parameter."
+            "message": "LETTA_API_KEY environment variable not found. Please set it or pass api_key parameter."
         }
     
     # Create client with token
@@ -103,9 +103,8 @@ def register_tool(api_key: Optional[str] = None):
         print()
         print("🔧 Next steps:")
         print("1. Make sure TELEGRAM_BOT_TOKEN is set in your Modal secrets")
-        print("2. Make sure TELEGRAM_LETTA_API_KEY is set in your Modal secrets")
-        print("3. Use `/telegram-notify enable` to configure agents for notifications")
-        print("4. Agent can then use the notify_via_telegram tool to send proactive messages")
+        print("2. Use `/telegram-notify enable` to configure agents for notifications")
+        print("3. Agent can then use the notify_via_telegram tool to send proactive messages")
         
         return {
             "status": "success",
