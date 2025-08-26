@@ -2364,7 +2364,7 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
                 ]
                 
                 # Update agent with new environment variables
-                client.agents.update(
+                client.agents.modify(
                     agent_id=agent_id,
                     tool_exec_environment_variables=new_env_vars
                 )
@@ -2400,7 +2400,7 @@ Your agent can now send you proactive notifications using the `notify_via_telegr
                 filtered_vars = [var for var in current_env_vars if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]]
                 
                 # Update agent
-                client.agents.update(
+                client.agents.modify(
                     agent_id=agent_id,
                     tool_exec_environment_variables=filtered_vars
                 )
