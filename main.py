@@ -2309,15 +2309,8 @@ Use `/telegram-notify enable` to set up notifications."""
             
             # Step 1: Check if notify_via_telegram tool exists and attach it
             try:
-                # Get project ID
-                project_info = get_chat_project(chat_id)
-                if not project_info:
-                    send_telegram_message(chat_id, "❌ No project configured. Please select a project first.")
-                    return
-                project_id = project_info["project_id"]
-                
                 # Search for notify_via_telegram tool
-                all_tools = client.tools.list(project_id=project_id, name="notify_via_telegram")
+                all_tools = client.tools.list(name="notify_via_telegram")
                 if not all_tools:
                     send_telegram_message(chat_id, """❌ **notify_via_telegram tool not found**
                     
