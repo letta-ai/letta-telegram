@@ -17,6 +17,11 @@ image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": 
 
 app = modal.App("letta-telegram-bot", image=image)
 
+# The time a container will remain warm after receiving a message.
+# A higher number here means that there will generally be lower latency for
+# messages sent in the same window.
+SCALEDOWN_TIME=400 
+
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
 
@@ -520,7 +525,8 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
     secrets=[
         modal.Secret.from_name("telegram-bot")
     ],
-    volumes={"/data": volume}
+    volumes={"/data": volume},
+    scaledown_window=300,
 )
 def process_message_async(update: dict):
     """
@@ -897,7 +903,8 @@ def process_message_async(update: dict):
     secrets=[
         modal.Secret.from_name("telegram-bot")
     ],
-    volumes={"/data": volume}
+    volumes={"/data": volume},
+    scaledown_window=300,
 )
 @modal.fastapi_endpoint(method="POST")
 def telegram_webhook(update: dict, request: Request):
