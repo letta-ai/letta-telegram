@@ -2403,6 +2403,8 @@ Use `/telegram-notify enable` to set up notifications."""
             try:
                 # Search for notify_via_telegram tool
                 all_tools = client.tools.list(name="notify_via_telegram")
+                tool_was_registered = False
+                
                 if not all_tools:
                     # Tool doesn't exist, register it automatically
                     send_telegram_message(chat_id, "🔧 **Registering notify_via_telegram tool...**")
@@ -2413,6 +2415,7 @@ Use `/telegram-notify enable` to set up notifications."""
                         return
                     
                     notify_tool = registration_result["tool"]
+                    tool_was_registered = True
                     send_telegram_message(chat_id, "✅ **Tool registered successfully!**")
                 else:
                     notify_tool = all_tools[0]
@@ -2452,7 +2455,7 @@ Use `/telegram-notify enable` to set up notifications."""
                 )
                 
                 # Show registration status in success message
-                tool_status = "registered and attached" if not all_tools else "attached"
+                tool_status = "registered and attached" if tool_was_registered else "attached"
                 
                 send_telegram_message(chat_id, f"""✅ **Telegram Notifications Enabled**
 
