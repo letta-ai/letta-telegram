@@ -1,5 +1,6 @@
 import os
 import json
+import traceback
 from typing import Dict, Any
 from datetime import datetime
 import modal
@@ -2429,8 +2430,25 @@ Use `/telegram-notify enable` to set up notifications."""
                     client.agents.tools.attach(agent_id=agent_id, tool_id=notify_tool.id)
                 
             except Exception as e:
-                send_telegram_message(chat_id, f"❌ Error attaching tool: {str(e)}")
-                return
+                error_details = traceback.format_exc()
+                print(f"Error attaching notify_via_telegram tool for chat {chat_id}: {str(e)}")
+                print(f"Full traceback:\n{error_details}")
+                
+                # Send detailed error to user
+                send_telegram_message(chat_id, f"""❌ **Error registering/attaching tool**
+
+**Error:** {str(e)}
+**Context:** Failed while registering or attaching notify_via_telegram tool
+
+This could be due to:
+- API authentication issues
+- Tool registration permissions
+- Network connectivity problems
+
+Please try again or contact support if the issue persists.""")
+                
+                # Re-raise to ensure error is tracked by infrastructure
+                raise
             
             # Step 2: Set up environment variables
             try:
@@ -2468,8 +2486,20 @@ Use `/telegram-notify enable` to set up notifications."""
 Your agent can now send you proactive notifications using the `notify_via_telegram` tool!""")
                 
             except Exception as e:
-                send_telegram_message(chat_id, f"❌ Error configuring environment: {str(e)}")
-                return
+                error_details = traceback.format_exc()
+                print(f"Error configuring environment for chat {chat_id}: {str(e)}")
+                print(f"Full traceback:\n{error_details}")
+                
+                # Send detailed error to user
+                send_telegram_message(chat_id, f"""❌ **Error configuring environment**
+
+**Error:** {str(e)}
+**Context:** Failed while setting up Telegram environment variables for agent
+
+Please try again or contact support if the issue persists.""")
+                
+                # Re-raise to ensure error is tracked by infrastructure
+                raise
         
         elif subcommand == "disable":
             send_telegram_typing(chat_id)
