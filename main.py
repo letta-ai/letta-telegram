@@ -2399,11 +2399,13 @@ Use `/telegram-notify enable` to set up notifications."""
         elif subcommand == "enable":
             send_telegram_typing(chat_id)
             
+            # Track if we register the tool for status message
+            tool_was_registered = False
+            
             # Step 1: Check if notify_via_telegram tool exists and register/attach it
             try:
                 # Search for notify_via_telegram tool
                 all_tools = client.tools.list(name="notify_via_telegram")
-                tool_was_registered = False
                 
                 if not all_tools:
                     # Tool doesn't exist, register it automatically
