@@ -2381,11 +2381,11 @@ Usage:
                 print(f"DEBUG STATUS: Raw env vars type: {type(raw_env_vars_status)}")
                 print(f"DEBUG STATUS: Raw env vars value: {repr(raw_env_vars_status)}")
                 
-                env_vars = raw_env_vars_status or {}
-                print(f"DEBUG STATUS: After 'or dict()' - type: {type(env_vars)}, value: {repr(env_vars)}")
+                env_vars = raw_env_vars_status or []
+                print(f"DEBUG STATUS: After 'or []' - type: {type(env_vars)}, value: {repr(env_vars)}")
                 
-                has_bot_token = "TELEGRAM_BOT_TOKEN" in env_vars
-                has_chat_id = "TELEGRAM_CHAT_ID" in env_vars
+                has_bot_token = any(var.key == "TELEGRAM_BOT_TOKEN" for var in env_vars)
+                has_chat_id = any(var.key == "TELEGRAM_CHAT_ID" for var in env_vars)
                 print(f"DEBUG STATUS: has_bot_token={has_bot_token}, has_chat_id={has_chat_id}")
                 
                 status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id) else "❌"
@@ -2483,8 +2483,8 @@ Please try again or contact support if the issue persists.""")
                 print(f"DEBUG: Raw env vars type: {type(raw_env_vars)}")
                 print(f"DEBUG: Raw env vars value: {repr(raw_env_vars)}")
                 
-                current_env_vars = raw_env_vars or {}
-                print(f"DEBUG: After 'or dict()' - type: {type(current_env_vars)}, value: {repr(current_env_vars)}")
+                current_env_vars = raw_env_vars or []
+                print(f"DEBUG: After 'or []' - type: {type(current_env_vars)}, value: {repr(current_env_vars)}")
                 
                 # Add Telegram environment variables
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -2494,22 +2494,24 @@ Please try again or contact support if the issue persists.""")
                     send_telegram_message(chat_id, "❌ TELEGRAM_BOT_TOKEN not available in server environment")
                     return
                 
-                print(f"DEBUG: About to copy current_env_vars...")
-                print(f"DEBUG: current_env_vars before copy: type={type(current_env_vars)}, value={repr(current_env_vars)}")
+                print(f"DEBUG: Converting list to dictionary for API call...")
+                # Convert list of AgentEnvironmentVariable objects to dictionary
+                env_dict = {}
+                if current_env_vars:
+                    for var in current_env_vars:
+                        env_dict[var.key] = var.value
+                print(f"DEBUG: Converted to dict: {repr(env_dict)}")
                 
-                # Create new environment variables dictionary
-                new_env_vars = current_env_vars.copy()
-                print(f"DEBUG: After copy - new_env_vars type: {type(new_env_vars)}")
-                
-                new_env_vars["TELEGRAM_BOT_TOKEN"] = bot_token
-                new_env_vars["TELEGRAM_CHAT_ID"] = chat_id
-                print(f"DEBUG: Final new_env_vars: {repr(new_env_vars)}")
+                # Add new Telegram environment variables
+                env_dict["TELEGRAM_BOT_TOKEN"] = bot_token
+                env_dict["TELEGRAM_CHAT_ID"] = chat_id
+                print(f"DEBUG: Final env_dict: {repr(env_dict)}")
                 
                 # Update agent with new environment variables
                 print(f"DEBUG: About to call client.agents.modify...")
                 client.agents.modify(
                     agent_id=agent_id,
-                    tool_exec_environment_variables=new_env_vars
+                    tool_exec_environment_variables=env_dict
                 )
                 print(f"DEBUG: Agent modify completed successfully")
                 
@@ -2554,10 +2556,14 @@ Please try again or contact support if the issue persists.""")
                 
                 # Step 2: Remove environment variables
                 agent = client.agents.retrieve(agent_id=agent_id)
-                current_env_vars = agent.tool_exec_environment_variables or {}
+                current_env_vars = agent.tool_exec_environment_variables or []
                 
-                # Remove Telegram-related environment variables
-                filtered_vars = {k: v for k, v in current_env_vars.items() if k not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]}
+                # Convert list to dict and remove Telegram-related environment variables
+                filtered_vars = {}
+                if current_env_vars:
+                    for var in current_env_vars:
+                        if var.key not in ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]:
+                            filtered_vars[var.key] = var.value
                 
                 # Update agent
                 client.agents.modify(
