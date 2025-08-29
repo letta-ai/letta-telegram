@@ -4,6 +4,7 @@ from typing import Dict, Any
 from datetime import datetime
 import modal
 from fastapi import Request, HTTPException
+from pydantic import BaseModel, Field
 
 
 image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": "1"}).pip_install([
@@ -152,6 +153,90 @@ def delete_user_credentials(user_id: str) -> bool:
         print(f"Error deleting user credentials for {user_id}: {e}")
         # Re-raise the exception so it gets tracked by infrastructure
         raise
+
+
+class TelegramMessageData(BaseModel):
+    """Schema for the notify_via_telegram tool arguments."""
+    message: str = Field(
+        ...,
+        description="The notification message to send to the Telegram user"
+    )
+
+
+def notify_via_telegram(message: str) -> str:
+    """
+    Send a notification message to the Telegram user.
+    
+    This tool sends a notification to a Telegram chat using the bot API.
+    It requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
+    
+    Args:
+        message (str): The notification message to send to the user
+        
+    Returns:
+        str: Confirmation that the message was sent or error message
+    """
+    import requests
+    
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not bot_token:
+        return "Error: TELEGRAM_BOT_TOKEN environment variable is not set"
+    
+    if not chat_id:
+        return "Error: TELEGRAM_CHAT_ID environment variable is not set"
+    
+    # Escape MarkdownV2 special characters
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    markdown_text = message
+    for char in special_chars:
+        markdown_text = markdown_text.replace(char, f'\\{char}')
+    
+    # Send message via Telegram API
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": markdown_text,
+        "parse_mode": "MarkdownV2"
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            return "Message sent successfully via Telegram"
+        else:
+            return f"Failed to send Telegram message: {response.status_code} - {response.text}"
+    except requests.exceptions.RequestException as e:
+        return f"Error sending Telegram message: {str(e)}"
+
+
+def register_notify_tool(client):
+    """
+    Register the notify_via_telegram tool with Letta.
+    
+    Args:
+        client: Letta client instance
+        
+    Returns:
+        dict: Registration status and tool info
+    """
+    try:
+        tool = client.tools.upsert_from_function(
+            func=notify_via_telegram,
+            args_schema=TelegramMessageData,
+            tags=["telegram", "notification", "messaging"]
+        )
+        return {
+            "status": "success",
+            "tool": tool
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
 
 def save_user_shortcut(user_id: str, shortcut_name: str, agent_id: str, agent_name: str) -> bool:
     """
@@ -2314,22 +2399,23 @@ Use `/telegram-notify enable` to set up notifications."""
         elif subcommand == "enable":
             send_telegram_typing(chat_id)
             
-            # Step 1: Check if notify_via_telegram tool exists and attach it
+            # Step 1: Check if notify_via_telegram tool exists and register/attach it
             try:
                 # Search for notify_via_telegram tool
                 all_tools = client.tools.list(name="notify_via_telegram")
                 if not all_tools:
-                    send_telegram_message(chat_id, """❌ **notify_via_telegram tool not found**
+                    # Tool doesn't exist, register it automatically
+                    send_telegram_message(chat_id, "🔧 **Registering notify_via_telegram tool...**")
                     
-Please register the tool first by running:
-```
-python register_telegram_tool.py
-```
-
-Then use `/tool attach notify_via_telegram` or try this command again.""")
-                    return
-                
-                notify_tool = all_tools[0]
+                    registration_result = register_notify_tool(client)
+                    if registration_result["status"] == "error":
+                        send_telegram_message(chat_id, f"❌ **Tool registration failed**\n\n{registration_result['message']}")
+                        return
+                    
+                    notify_tool = registration_result["tool"]
+                    send_telegram_message(chat_id, "✅ **Tool registered successfully!**")
+                else:
+                    notify_tool = all_tools[0]
                 
                 # Check if already attached
                 attached_tools = client.agents.tools.list(agent_id=agent_id)
@@ -2365,10 +2451,13 @@ Then use `/tool attach notify_via_telegram` or try this command again.""")
                     tool_exec_environment_variables=new_env_vars
                 )
                 
+                # Show registration status in success message
+                tool_status = "registered and attached" if not all_tools else "attached"
+                
                 send_telegram_message(chat_id, f"""✅ **Telegram Notifications Enabled**
 
 **Agent:** {agent_name}
-**Tool:** notify_via_telegram attached
+**Tool:** notify_via_telegram {tool_status}
 **Environment:** Configured for this chat
 
 Your agent can now send you proactive notifications using the `notify_via_telegram` tool!""")
