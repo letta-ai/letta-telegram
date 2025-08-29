@@ -22,7 +22,7 @@ app = modal.App("letta-telegram-bot", image=image)
 # The time a container will remain warm after receiving a message.
 # A higher number here means that there will generally be lower latency for
 # messages sent in the same window.
-SCALEDOWN_WINDOW=400 
+SCALEDOWN_WINDOW=30
 
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
@@ -2382,7 +2382,7 @@ Usage:
                 print(f"DEBUG STATUS: Raw env vars value: {repr(raw_env_vars_status)}")
                 
                 env_vars = raw_env_vars_status or {}
-                print(f"DEBUG STATUS: After 'or {}' - type: {type(env_vars)}, value: {repr(env_vars)}")
+                print(f"DEBUG STATUS: After 'or dict()' - type: {type(env_vars)}, value: {repr(env_vars)}")
                 
                 has_bot_token = "TELEGRAM_BOT_TOKEN" in env_vars
                 has_chat_id = "TELEGRAM_CHAT_ID" in env_vars
@@ -2484,7 +2484,7 @@ Please try again or contact support if the issue persists.""")
                 print(f"DEBUG: Raw env vars value: {repr(raw_env_vars)}")
                 
                 current_env_vars = raw_env_vars or {}
-                print(f"DEBUG: After 'or {}' - type: {type(current_env_vars)}, value: {repr(current_env_vars)}")
+                print(f"DEBUG: After 'or dict()' - type: {type(current_env_vars)}, value: {repr(current_env_vars)}")
                 
                 # Add Telegram environment variables
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
