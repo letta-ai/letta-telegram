@@ -2375,11 +2375,18 @@ Usage:
                 notify_tool_attached = any(tool.name == "notify_via_telegram" for tool in attached_tools)
                 
                 # Get agent to check environment variables
+                print(f"DEBUG STATUS: Checking env vars for agent {agent_id}")
                 agent = client.agents.retrieve(agent_id=agent_id)
-                env_vars = agent.tool_exec_environment_variables or {}
+                raw_env_vars_status = agent.tool_exec_environment_variables
+                print(f"DEBUG STATUS: Raw env vars type: {type(raw_env_vars_status)}")
+                print(f"DEBUG STATUS: Raw env vars value: {repr(raw_env_vars_status)}")
+                
+                env_vars = raw_env_vars_status or {}
+                print(f"DEBUG STATUS: After 'or {}' - type: {type(env_vars)}, value: {repr(env_vars)}")
                 
                 has_bot_token = "TELEGRAM_BOT_TOKEN" in env_vars
                 has_chat_id = "TELEGRAM_CHAT_ID" in env_vars
+                print(f"DEBUG STATUS: has_bot_token={has_bot_token}, has_chat_id={has_chat_id}")
                 
                 status_emoji = "✅" if (notify_tool_attached and has_bot_token and has_chat_id) else "❌"
                 
@@ -2405,29 +2412,41 @@ Use `/telegram-notify enable` to set up notifications."""
             
             # Step 1: Check if notify_via_telegram tool exists and register/attach it
             try:
+                print(f"DEBUG: Starting tool attachment for chat {chat_id}")
+                
                 # Search for notify_via_telegram tool
                 all_tools = client.tools.list(name="notify_via_telegram")
+                print(f"DEBUG: Found {len(all_tools)} notify_via_telegram tools")
                 
                 if not all_tools:
                     # Tool doesn't exist, register it automatically
+                    print(f"DEBUG: Tool not found, registering new tool")
                     send_telegram_message(chat_id, "🔧 **Registering notify_via_telegram tool...**")
                     
                     registration_result = register_notify_tool(client)
+                    print(f"DEBUG: Registration result: {registration_result}")
                     if registration_result["status"] == "error":
                         send_telegram_message(chat_id, f"❌ **Tool registration failed**\n\n{registration_result['message']}")
                         return
                     
                     notify_tool = registration_result["tool"]
                     tool_was_registered = True
+                    print(f"DEBUG: Tool registered with ID: {notify_tool.id}")
                     send_telegram_message(chat_id, "✅ **Tool registered successfully!**")
                 else:
                     notify_tool = all_tools[0]
+                    print(f"DEBUG: Using existing tool with ID: {notify_tool.id}")
                 
                 # Check if already attached
                 attached_tools = client.agents.tools.list(agent_id=agent_id)
+                print(f"DEBUG: Agent has {len(attached_tools)} tools attached")
                 if not any(tool.id == notify_tool.id for tool in attached_tools):
+                    print(f"DEBUG: Attaching tool {notify_tool.id} to agent {agent_id}")
                     # Attach the tool
                     client.agents.tools.attach(agent_id=agent_id, tool_id=notify_tool.id)
+                    print(f"DEBUG: Tool attached successfully")
+                else:
+                    print(f"DEBUG: Tool already attached to agent")
                 
             except Exception as e:
                 error_details = traceback.format_exc()
@@ -2452,30 +2471,51 @@ Please try again or contact support if the issue persists.""")
             
             # Step 2: Set up environment variables
             try:
+                print(f"DEBUG: Starting environment configuration for agent {agent_id}")
+                
                 # Get current agent configuration
                 agent = client.agents.retrieve(agent_id=agent_id)
-                current_env_vars = agent.tool_exec_environment_variables or {}
+                print(f"DEBUG: Retrieved agent object: {type(agent)}")
+                print(f"DEBUG: Agent attributes: {dir(agent)}")
+                
+                # Get the raw environment variables
+                raw_env_vars = agent.tool_exec_environment_variables
+                print(f"DEBUG: Raw env vars type: {type(raw_env_vars)}")
+                print(f"DEBUG: Raw env vars value: {repr(raw_env_vars)}")
+                
+                current_env_vars = raw_env_vars or {}
+                print(f"DEBUG: After 'or {}' - type: {type(current_env_vars)}, value: {repr(current_env_vars)}")
                 
                 # Add Telegram environment variables
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+                print(f"DEBUG: Bot token exists: {bot_token is not None}")
                 
                 if not bot_token:
                     send_telegram_message(chat_id, "❌ TELEGRAM_BOT_TOKEN not available in server environment")
                     return
                 
+                print(f"DEBUG: About to copy current_env_vars...")
+                print(f"DEBUG: current_env_vars before copy: type={type(current_env_vars)}, value={repr(current_env_vars)}")
+                
                 # Create new environment variables dictionary
                 new_env_vars = current_env_vars.copy()
+                print(f"DEBUG: After copy - new_env_vars type: {type(new_env_vars)}")
+                
                 new_env_vars["TELEGRAM_BOT_TOKEN"] = bot_token
                 new_env_vars["TELEGRAM_CHAT_ID"] = chat_id
+                print(f"DEBUG: Final new_env_vars: {repr(new_env_vars)}")
                 
                 # Update agent with new environment variables
+                print(f"DEBUG: About to call client.agents.modify...")
                 client.agents.modify(
                     agent_id=agent_id,
                     tool_exec_environment_variables=new_env_vars
                 )
+                print(f"DEBUG: Agent modify completed successfully")
                 
                 # Show registration status in success message
                 tool_status = "registered and attached" if tool_was_registered else "attached"
+                print(f"DEBUG: tool_status = {tool_status}")
                 
                 send_telegram_message(chat_id, f"""✅ **Telegram Notifications Enabled**
 
