@@ -2278,8 +2278,13 @@ def handle_tool_detach(client, agent_id: str, tool_name: str, chat_id: str):
                 send_telegram_message(chat_id, "❌ No tools are currently attached to this agent.")
                 return
 
-            # Find the tool by name (exact or partial match)
-            matching_tools = [tool for tool in attached_tools if tool_name.lower() in tool.name.lower()]
+            # Find the tool by name (exact match first, then partial match)
+            exact_matches = [tool for tool in attached_tools if tool.name.lower() == tool_name.lower()]
+            if exact_matches:
+                matching_tools = exact_matches
+            else:
+                # Fall back to substring match if no exact match found
+                matching_tools = [tool for tool in attached_tools if tool_name.lower() in tool.name.lower()]
 
             if not matching_tools:
                 response = f"❌ Tool `{tool_name}` is not attached to this agent.\n\n**Attached tools:**\n"
