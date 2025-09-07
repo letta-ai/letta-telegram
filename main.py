@@ -626,14 +626,25 @@ def process_message_async(update: dict):
 
     try:
         # Extract message details from Telegram update
-        if "message" not in update or "text" not in update["message"]:
+        if "message" not in update:
             return
 
-        message_text = update["message"]["text"]
-        chat_id = str(update["message"]["chat"]["id"])
-        user_id = str(update["message"]["from"]["id"])
-        user_name = update["message"]["from"].get("username", "Unknown")
-        print(f"Processing message: {message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
+        message = update["message"]
+        chat_id = str(message["chat"]["id"])
+        user_id = str(message["from"]["id"])
+        user_name = message["from"].get("username", "Unknown")
+        
+        # Handle both text messages and photo messages
+        has_text = "text" in message
+        has_photo = "photo" in message
+        
+        if not has_text and not has_photo:
+            return  # Skip messages without text or photos
+        
+        # Extract text (either direct text or photo caption)
+        message_text = message.get("text", "") or message.get("caption", "")
+        
+        print(f"Processing message: {'[IMAGE]' if has_photo else ''}{message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
 
         # Check for user-specific credentials
         try:
@@ -758,12 +769,50 @@ def process_message_async(update: dict):
             print(f"Warning: Could not check for agent name updates: {e}")
             # Continue with cached name if API call fails
 
-        # Add context about the source and user
-        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text}"
+        # Prepare message content (multimodal support)
+        content_parts = []
+        
+        # Add image if present
+        if has_photo:
+            try:
+                bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+                if not bot_token:
+                    raise Exception("Missing Telegram bot token")
+                
+                # Get the largest photo (last in array)
+                largest_photo = message["photo"][-1]
+                file_id = largest_photo["file_id"]
+                
+                # Download and convert image
+                print(f"Downloading image with file_id: {file_id}")
+                image_data, media_type = download_telegram_image(file_id, bot_token)
+                
+                # Add image to content
+                content_parts.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": image_data
+                    }
+                })
+                
+            except Exception as e:
+                print(f"Error processing image: {str(e)}")
+                # Add error message to text instead
+                message_text = f"[Image processing failed: {str(e)}]\n{message_text}"
+        
+        # Add text content
+        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text if message_text else 'User sent an image.'}"
+        content_parts.append({
+            "type": "text",
+            "text": context_message
+        })
+        
         print(f"Context message: {context_message}")
         
         # Notify user that message was received
-        send_telegram_message(chat_id, "(please wait)")
+        send_telegram_message(chat_id, "(processing image...)" if has_photo else "(please wait)")
 
         # Process agent response with streaming
         try:
@@ -773,12 +822,7 @@ def process_message_async(update: dict):
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": context_message
-                            }
-                        ]
+                        "content": content_parts
                     }
                 ],
                 include_pings=True,
@@ -1009,77 +1053,92 @@ def telegram_webhook(update: dict, request: Request):
 
     try:
         # Extract message details from Telegram update
-        if "message" in update and "text" in update["message"]:
-            message_text = update["message"]["text"]
-            chat_id = str(update["message"]["chat"]["id"])
-            user_name = update["message"]["from"].get("username", "Unknown")
-            print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
-
-            # Handle commands synchronously (they're fast)
-            if message_text.startswith('/agents'):
-                handle_agents_command(update, chat_id)
+        if "message" in update:
+            message = update["message"]
+            has_text = "text" in message
+            has_photo = "photo" in message
+            
+            # Skip messages without text or photos
+            if not has_text and not has_photo:
                 return {"ok": True}
-            elif message_text.startswith('/agent'):
-                handle_agent_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/help'):
-                handle_help_command(chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/make-default-agent'):
-                handle_make_default_agent_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/ade'):
-                handle_ade_command(chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/login'):
-                handle_login_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/logout'):
-                handle_logout_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/status'):
-                handle_status_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/start'):
-                handle_start_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/tool'):
-                handle_tool_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/telegram-notify'):
-                handle_telegram_notify_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/shortcut'):
-                handle_shortcut_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/switch'):
-                handle_switch_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/projects'):
-                handle_projects_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/project'):
-                handle_project_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/clear-preferences'):
-                handle_clear_preferences_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/blocks'):
-                handle_blocks_command(update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/block'):
-                handle_block_command(message_text, update, chat_id)
-                return {"ok": True}
-            elif message_text.startswith('/refresh'):
-                handle_refresh_command(update, chat_id)
-                return {"ok": True}
-
-            # Send immediate feedback
-            send_telegram_typing(chat_id)
-
-            # Spawn background processing for regular messages
-            print("Spawning background task")
-            process_message_async.spawn(update)
+            
+            chat_id = str(message["chat"]["id"])
+            user_name = message["from"].get("username", "Unknown")
+            
+            # Handle commands only for text messages
+            if has_text:
+                message_text = message["text"]
+                print(f"Received message: {message_text} from {user_name} in chat {chat_id}")
+                
+                # Handle commands synchronously (they're fast)
+                if message_text.startswith('/agents'):
+                    handle_agents_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/agent'):
+                    handle_agent_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/help'):
+                    handle_help_command(chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/make-default-agent'):
+                    handle_make_default_agent_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/ade'):
+                    handle_ade_command(chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/login'):
+                    handle_login_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/logout'):
+                    handle_logout_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/status'):
+                    handle_status_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/start'):
+                    handle_start_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/tool'):
+                    handle_tool_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/telegram-notify'):
+                    handle_telegram_notify_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/shortcut'):
+                    handle_shortcut_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/switch'):
+                    handle_switch_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/projects'):
+                    handle_projects_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/project'):
+                    handle_project_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/clear-preferences'):
+                    handle_clear_preferences_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/blocks'):
+                    handle_blocks_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/block'):
+                    handle_block_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/refresh'):
+                    handle_refresh_command(update, chat_id)
+                    return {"ok": True}
+                else:
+                    # Non-command text message - spawn background processing
+                    send_telegram_typing(chat_id)
+                    print("Spawning background task for text message")
+                    process_message_async.spawn(update)
+            else:
+                # Photo message (with or without caption) - spawn background processing
+                print(f"Received photo from {user_name} in chat {chat_id}")
+                send_telegram_typing(chat_id)
+                print("Spawning background task for photo message")
+                process_message_async.spawn(update)
 
     except Exception as e:
         print(f"Error in webhook handler: {str(e)}")
@@ -3210,6 +3269,49 @@ def split_message_at_boundary(text: str, max_bytes: int = 4096) -> list[str]:
         chunks.append(remaining)
     
     return chunks
+
+def download_telegram_image(file_id: str, bot_token: str) -> tuple[str, str]:
+    """
+    Download an image from Telegram and return base64 data and media type
+    
+    Returns:
+        tuple: (base64_data, media_type) or raises exception on failure
+    """
+    import requests
+    import base64
+    
+    # Get file info from Telegram
+    file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile"
+    file_info_response = requests.get(file_info_url, params={"file_id": file_id})
+    file_info_response.raise_for_status()
+    
+    file_info = file_info_response.json()
+    if not file_info.get("ok"):
+        raise Exception(f"Failed to get file info: {file_info.get('description', 'Unknown error')}")
+    
+    file_path = file_info["result"]["file_path"]
+    
+    # Download the actual file
+    file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+    file_response = requests.get(file_url)
+    file_response.raise_for_status()
+    
+    # Convert to base64
+    image_data = base64.standard_b64encode(file_response.content).decode("utf-8")
+    
+    # Determine media type from file extension
+    if file_path.lower().endswith(('.jpg', '.jpeg')):
+        media_type = "image/jpeg"
+    elif file_path.lower().endswith('.png'):
+        media_type = "image/png"
+    elif file_path.lower().endswith('.gif'):
+        media_type = "image/gif"
+    elif file_path.lower().endswith('.webp'):
+        media_type = "image/webp"
+    else:
+        media_type = "image/jpeg"  # Default fallback
+    
+    return image_data, media_type
 
 def send_telegram_message(chat_id: str, text: str):
     """
