@@ -656,7 +656,12 @@ def process_message_async(update: dict):
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required - use /start for setup or /login <api_key>)")
+            response = "(authentication needed)\n\nyou'll need to connect your letta account first"
+            keyboard = create_inline_keyboard([
+                ["start setup", "i have an account"],
+                ["learn more"]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
             return
 
         # Use user-specific credentials
@@ -747,7 +752,12 @@ def process_message_async(update: dict):
                     return
 
             # Default no agent message
-            send_telegram_message(chat_id, "(error: no agent configured - use /agents to select one)")
+            response = "(no agent selected)\n\nchoose an agent to start chatting"
+            keyboard = create_inline_keyboard([
+                [("view my agents", "cmd_agents")],
+                [("create new", "template_research"), ("use template", "template_personal")]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
             return
 
         # Extract agent info
@@ -1028,6 +1038,263 @@ def process_message_async(update: dict):
         # Re-raise the exception to preserve call stack in logs
         raise
 
+def handle_template_selection(template_name: str, user_id: str, chat_id: str):
+    """
+    Handle agent template selection - creates a pre-configured agent
+    """
+    try:
+        from letta_client import Letta
+        
+        # Check for user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            response = "(hmm, need to authenticate first)\n\ndo /login with your api key"
+            keyboard = create_inline_keyboard([["show me how"]])
+            send_telegram_message(chat_id, response, keyboard)
+            return
+        
+        if not user_credentials:
+            response = "(need to authenticate first)\n\nuse /login <api_key>"
+            keyboard = create_inline_keyboard([["show me how"]])
+            send_telegram_message(chat_id, response, keyboard)
+            return
+        
+        # Use user-specific credentials
+        letta_api_key = user_credentials["api_key"]
+        letta_api_url = user_credentials["api_url"]
+        
+        # Initialize Letta client
+        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        
+        send_telegram_message(chat_id, f"(setting up {template_name.replace('_', ' ')}...)")
+        
+        # Define template configurations
+        templates = {
+            "research": {
+                "name": "research helper",
+                "persona": "you are a thorough research assistant who helps find, analyze, and synthesize information. you're curious and detail-oriented.",
+                "human": "i need help with research and analysis",
+                "tools": ["web_search"],
+                "message": "(research helper ready)\n\ni can search the web and help you dig into topics"
+            },
+            "personal": {
+                "name": "personal assistant",
+                "persona": "you are a helpful personal assistant focused on organization and daily tasks. you're proactive and thoughtful.",
+                "human": "i want help managing my daily life",
+                "tools": [],
+                "message": "(personal assistant here)\n\ni'll help keep track of things"
+            },
+            "creative": {
+                "name": "creative buddy",
+                "persona": "you are a creative collaborator who helps with brainstorming and creative projects. you're imaginative and encouraging.",
+                "human": "i enjoy creative projects and brainstorming",
+                "tools": [],
+                "message": "(creative buddy activated)\n\nlet's make something interesting"
+            },
+            "study": {
+                "name": "study partner",
+                "persona": "you are a patient study companion who helps with learning and retention. you're encouraging and methodical.",
+                "human": "i'm a student who wants help learning",
+                "tools": [],
+                "message": "(study partner online)\n\nwe can work through problems together"
+            }
+        }
+        
+        template = templates.get(template_name)
+        if not template:
+            send_telegram_message(chat_id, "(hmm, don't know that template)")
+            return
+        
+        try:
+            # Create the agent with template configuration
+            agent = client.agents.create(
+                name=template["name"],
+                memory_blocks=[
+                    {"label": "human", "limit": 2000, "value": template["human"]},
+                    {"label": "persona", "limit": 2000, "value": template["persona"]}
+                ],
+                tools=template["tools"] if template["tools"] else []
+            )
+            
+            # Save agent selection
+            save_chat_agent(chat_id, agent.id, agent.name)
+            
+            # Send success message
+            send_telegram_message(chat_id, template["message"])
+            
+        except Exception as e:
+            print(f"Error creating template agent: {str(e)}")
+            send_telegram_message(chat_id, f"(couldn't create that agent: {str(e)[:100]})")
+            
+    except Exception as e:
+        print(f"Error in template selection: {str(e)}")
+        send_telegram_message(chat_id, "(something went wrong with the template)")
+
+def handle_callback_query(update: dict):
+    """
+    Handle callback queries from inline keyboard buttons
+    """
+    try:
+        callback_query = update["callback_query"]
+        callback_data = callback_query["data"]
+        chat_id = str(callback_query["message"]["chat"]["id"])
+        user_id = str(callback_query["from"]["id"])
+        message_id = callback_query["message"]["message_id"]
+        
+        # Answer the callback query to remove loading state
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        if bot_token:
+            import requests
+            answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+            requests.post(answer_url, data={"callback_query_id": callback_query["id"]})
+        
+        print(f"Handling callback: {callback_data} from user {user_id}")
+        
+        # Handle different callback actions
+        if callback_data == "sure":
+            # Start onboarding flow
+            response = "(cool. you'll need an api key from letta)\n\n1. head to app.letta.com\n2. make an account if you need one\n3. grab your api key from settings"
+            keyboard = create_inline_keyboard([
+                ["got my key", "need help"]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
+            
+        elif callback_data == "i_know_what_i'm_doing":
+            send_telegram_message(chat_id, "(alright. use /login <api_key> when you're ready)")
+            
+        elif callback_data == "got_my_key":
+            response = "(nice. just do /login and paste your key)\n\nlike: /login sk-whatever\n\ni'll delete the message right away for privacy"
+            keyboard = create_inline_keyboard([["got it"]])
+            send_telegram_message(chat_id, response, keyboard)
+            
+        elif callback_data == "need_help":
+            send_telegram_message(chat_id, "(visit app.letta.com and click 'sign up' if you don't have an account. then go to settings → api keys)")
+            
+        elif callback_data == "got_it":
+            send_telegram_message(chat_id, "(waiting for your /login command...)")
+            
+        elif callback_data == "just_chat" or callback_data == "maybe_later":
+            send_telegram_message(chat_id, "(alright)")
+            
+        elif callback_data == "start_setup":
+            # Redirect to onboarding flow
+            response = "(cool. you'll need an api key from letta)\n\n1. head to app.letta.com\n2. make an account if you need one\n3. grab your api key from settings"
+            keyboard = create_inline_keyboard([
+                ["got my key", "need help"]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
+            
+        elif callback_data == "i_have_an_account":
+            response = "(alright. use /login <api_key> to connect)\n\nexample: /login sk-abc123..."
+            send_telegram_message(chat_id, response)
+            
+        elif callback_data == "learn_more":
+            response = "(about letta)\n\nletta agents have persistent memory - they remember everything from previous conversations\n\nvisit letta.com to learn more"
+            send_telegram_message(chat_id, response)
+            
+        elif callback_data == "show_me_how":
+            response = "(getting your api key)\n\n1. go to app.letta.com\n2. sign up or log in\n3. click on settings\n4. find api keys section\n5. create new key\n6. copy it\n7. come back here and do /login <your-key>"
+            send_telegram_message(chat_id, response)
+            
+        elif callback_data == "create_new":
+            # Show template options
+            response = "(pick a starter template)"
+            keyboard = create_inline_keyboard([
+                [("research helper", "template_research")],
+                [("personal assistant", "template_personal")],
+                [("creative buddy", "template_creative")],
+                [("study partner", "template_study")]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
+            
+        elif callback_data == "show_all_options":
+            response = "(here's what you can do)\n\n/agents - see your agents\n/projects - view projects\n/tool - manage tools\n/help - all commands"
+            keyboard = create_inline_keyboard([
+                [("show my agents", "cmd_agents")],
+                [("pick a template", "create_new")]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
+            
+        elif callback_data == "just_explore":
+            send_telegram_message(chat_id, "(cool. type /help anytime if you need it)")
+            
+        # Tool menu navigation
+        elif callback_data == "tool_menu_done":
+            send_telegram_message(chat_id, "(alright)")
+            
+        elif callback_data == "tool_menu_attach":
+            # Show attach menu (page 0)
+            handle_tool_attach_menu(user_id, chat_id, page=0)
+            
+        elif callback_data == "tool_menu_detach":
+            # Show detach menu
+            handle_tool_detach_menu(user_id, chat_id)
+            
+        elif callback_data == "tool_menu_back":
+            # Go back to main tool menu
+            handle_tool_command("/tool", {"message": {"from": {"id": user_id}}}, chat_id)
+            
+        elif callback_data.startswith("tool_attach_page_"):
+            # Handle pagination for attach menu
+            page = int(callback_data.replace("tool_attach_page_", ""))
+            handle_tool_attach_menu(user_id, chat_id, page=page)
+            
+        # Command shortcuts from buttons
+        elif callback_data == "cmd_agents":
+            # Simulate /agents command
+            handle_agents_command({"message": {"from": {"id": user_id}}}, chat_id)
+            
+        elif callback_data == "cmd_tool":
+            # Simulate /tool command
+            handle_tool_command("/tool", {"message": {"from": {"id": user_id}}}, chat_id)
+            
+        elif callback_data == "cmd_projects":
+            # Simulate /projects command
+            handle_projects_command("/projects", {"message": {"from": {"id": user_id}}}, chat_id)
+            
+        # Template selections
+        elif callback_data.startswith("template_"):
+            template_name = callback_data.replace("template_", "")
+            handle_template_selection(template_name, user_id, chat_id)
+            
+        # Agent selection
+        elif callback_data.startswith("select_agent_"):
+            agent_id = callback_data.replace("select_agent_", "")
+            handle_agent_command(f"/agent {agent_id}", {"message": {"from": {"id": user_id}}}, chat_id)
+            
+        # Project switching
+        elif callback_data.startswith("switch_project_"):
+            project_id = callback_data.replace("switch_project_", "")
+            handle_project_command(f"/project {project_id}", {"message": {"from": {"id": user_id}}}, chat_id)
+            
+        # Tool management
+        elif callback_data.startswith("attach_tool_"):
+            tool_name = callback_data.replace("attach_tool_", "")
+            # Attach the tool
+            handle_tool_command(f"/tool attach {tool_name}", {"message": {"from": {"id": user_id}}}, chat_id)
+            # Go back to attach menu page 0 (tools have changed, reset to first page)
+            handle_tool_attach_menu(user_id, chat_id, page=0)
+            
+        elif callback_data.startswith("detach_tool_"):
+            tool_name = callback_data.replace("detach_tool_", "")
+            # Detach the tool
+            handle_tool_command(f"/tool detach {tool_name}", {"message": {"from": {"id": user_id}}}, chat_id)
+            # Go back to detach menu to show updated list
+            handle_tool_detach_menu(user_id, chat_id)
+            
+        else:
+            print(f"Unknown callback data: {callback_data}")
+            
+    except Exception as e:
+        print(f"Error handling callback query: {str(e)}")
+        try:
+            if 'chat_id' in locals():
+                send_telegram_message(chat_id, "(hmm, that didn't work. try the command directly?)")
+        except:
+            pass
+
 @app.function(
     image=image,
     secrets=[
@@ -1052,6 +1319,11 @@ def telegram_webhook(update: dict, request: Request):
     print(f"Received update: {update}")
 
     try:
+        # Handle callback queries (button clicks)
+        if "callback_query" in update:
+            handle_callback_query(update)
+            return {"ok": True}
+        
         # Extract message details from Telegram update
         if "message" in update:
             message = update["message"]
@@ -1380,19 +1652,40 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 except Exception as e:
                     print(f"Warning: Could not check for default agent: {e}")
 
-            response = f"👾 (welcome to letta, {user_name})"
-            if project_set_message or agent_offer_message:
-                response += f"\n\n{project_set_message}{agent_offer_message}"
-
-            if not agent_offer_message:
-                response += "You can now:\n"
-                response += "• Chat with your Letta agents\n"
-                response += "• Use `/agents` to list available agents\n"
-                response += "• Use `/agent <id>` to select an agent\n"
-                response += "• Use `/projects` to view/switch projects\n"
-                response += "• Use `/help` to see all commands"
-
-            send_telegram_message(chat_id, response)
+            response = f"(all set. welcome {user_name.lower()})\n\n"
+            
+            # Check if user has agents to offer appropriate next steps
+            try:
+                from letta_client import Letta
+                client = Letta(token=api_key, base_url=api_url)
+                agents = client.agents.list(project_id=default_project_id) if default_project_id else []
+                
+                if agents and len(agents) > 0:
+                    response += "want to pick an agent?"
+                    keyboard = create_inline_keyboard([
+                        [("show my agents", "cmd_agents")],
+                        [("research helper", "template_research"), ("personal assistant", "template_personal")],
+                        ["maybe later"]
+                    ])
+                else:
+                    response += "looks like you need an agent. want to create one?"
+                    keyboard = create_inline_keyboard([
+                        [("research helper", "template_research")],
+                        [("personal assistant", "template_personal")],
+                        [("creative buddy", "template_creative")],
+                        [("study partner", "template_study")],
+                        ["show all options"]
+                    ])
+                send_telegram_message(chat_id, response, keyboard)
+            except:
+                # Fallback if we can't check agents
+                response += "what's next?"
+                keyboard = create_inline_keyboard([
+                    [("show my agents", "cmd_agents")],
+                    [("pick a template", "create_new")],
+                    ["just explore"]
+                ])
+                send_telegram_message(chat_id, response, keyboard)
         except Exception as storage_error:
             print(f"Failed to store credentials for user {user_id}: {storage_error}")
             send_telegram_message(chat_id, "(error: failed to store credentials)")
@@ -1682,20 +1975,33 @@ def handle_start_command(update: dict, chat_id: str):
             raise
 
         if credentials:
-            # User is already authenticated - show quick overview
-            response = f"(welcome back {first_name} - you're ready to chat)"
+            # User is already authenticated - check if they have an agent selected
+            agent_info = get_chat_agent(chat_id)
+            if agent_info:
+                response = f"(welcome back {first_name.lower()}. you're chatting with {agent_info['agent_name']})"
+                keyboard = create_inline_keyboard([
+                    [("switch agent", "cmd_agents"), ("view tools", "cmd_tool")],
+                    ["just chat"]
+                ])
+            else:
+                response = f"(welcome back {first_name.lower()}. want to pick an agent?)"
+                keyboard = create_inline_keyboard([
+                    [("show my agents", "cmd_agents")],
+                    [("research helper", "template_research"), ("personal assistant", "template_personal")],
+                    ["maybe later"]
+                ])
+            send_telegram_message(chat_id, response, keyboard)
         else:
-            # New user - provide simple setup guide
-            response = f"(welcome, {first_name}. get your API key here: https://app.letta.com)"
-
-
-
-
-        send_telegram_message(chat_id, response)
+            # New user - provide interactive setup guide
+            response = f"(hey {first_name.lower()}, welcome to letta)\n\nlooks like you're new here. want help getting started?"
+            keyboard = create_inline_keyboard([
+                ["sure", "i know what i'm doing"]
+            ])
+            send_telegram_message(chat_id, response, keyboard)
 
     except Exception as e:
         print(f"Error handling start command: {str(e)}")
-        send_telegram_message(chat_id, "❌ Error processing start command. Please try again or use `/help` for assistance.")
+        send_telegram_message(chat_id, "(something went wrong. try /help maybe?)")
 
 def handle_agent_command(message: str, update: dict, chat_id: str):
     """
@@ -2085,22 +2391,36 @@ def handle_agents_command(update: dict, chat_id: str):
                 send_telegram_message(chat_id, "**Available Agents:**\n\nNo agents available. Create an agent first.")
                 return
 
-            # Build clean response message
-            response = ""
-
+            # Build clean response message with limited buttons
+            response = "(your agents)\n\n"
+            
             if current_agent_id:
-                response += f"**Current Agent:** {current_agent_name}\n"
-                response += f"`{current_agent_id}`\n\n"
-            else:
-                response += "**Current Agent:** None set\n\n"
+                response += f"currently using: {current_agent_name}\n\n"
 
-            response += "**Available Agents:**\n\n"
+            # Show all agents in text
+            response += f"available ({len(agents)}):\n"
+            for agent in agents[:10]:  # Show first 10 in detail
+                response += f"• {agent.name}\n  `{agent.id}`\n"
+            
+            if len(agents) > 10:
+                response += f"\n...and {len(agents) - 10} more\n"
+            
+            response += "\n"
+            
+            # Only show buttons for first 5 agents (excluding current)
+            buttons = []
+            button_count = 0
             for agent in agents:
-                response += f"{agent.name}\n`{agent.id}`\n\n"
-
-            response += f"**Usage:** `/agent <agent_id>` to select an agent"
-
-            send_telegram_message(chat_id, response)
+                if agent.id != current_agent_id and button_count < 5:
+                    buttons.append([(f"use {agent.name[:25]}", f"select_agent_{agent.id}")])
+                    button_count += 1
+            
+            if len(agents) > 5:
+                response += "(showing first 5 as buttons)\n"
+            response += "type /agent <id> to select any agent"
+            
+            keyboard = create_inline_keyboard(buttons) if buttons else None
+            send_telegram_message(chat_id, response, keyboard)
             return
 
         except ApiError as e:
@@ -2219,54 +2539,190 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
             send_telegram_message(chat_id, f"❌ Error getting available tools: {str(e)}")
             return
 
-        # Build response message
-        response = "(tools)\n\n"
-
+        # Build response message showing current tools
+        response = "(agent tools)\n\n"
+        
         # Show attached tools
         if attached_tools:
-            response += f"Attached ({len(attached_tools)}):\n"
-            for tool in attached_tools:
-                # Truncate description to first sentence or 100 chars
-                desc = tool.description or 'No description'
-                if '.' in desc:
-                    desc = desc.split('.')[0] + '.'
-                elif len(desc) > 100:
-                    desc = desc[:97] + '...'
-                response += f"- `{tool.name}` - {desc}\n"
+            response += f"currently using {len(attached_tools)} tools:\n"
+            for tool in attached_tools[:10]:
+                response += f"• {tool.name}\n"
+            if len(attached_tools) > 10:
+                response += f"• ...and {len(attached_tools) - 10} more\n"
         else:
-            response += "Attached: none\n"
+            response += "no tools attached yet\n"
 
         response += "\n"
-
-        # Show available tools (not already attached)
+        
+        # Calculate available tools
         attached_tool_ids = {tool.id for tool in attached_tools}
         available_tools = [tool for tool in all_tools if tool.id not in attached_tool_ids]
+        response += f"{len(available_tools)} tools available to add"
 
+        # Navigation buttons
+        buttons = []
+        if attached_tools:
+            buttons.append([("remove tools", "tool_menu_detach")])
         if available_tools:
-            response += f"Available ({len(available_tools)}):\n"
-            for tool in available_tools[:10]:  # Limit to first 10 to avoid message length issues
-                # Truncate description to first sentence or 100 chars
-                desc = tool.description or 'No description'
-                if '.' in desc:
-                    desc = desc.split('.')[0] + '.'
-                elif len(desc) > 100:
-                    desc = desc[:97] + '...'
-                response += f"- `{tool.name}` - {desc}\n"
-            if len(available_tools) > 10:
-                response += f"... and {len(available_tools) - 10} more\n"
-        else:
-            response += "Available: all tools attached\n"
-
-        response += "\nUsage:\n"
-        response += "`/tool attach <name>` - Attach tool\n"
-        response += "`/tool detach <name>` - Detach tool"
-
-        send_telegram_message(chat_id, response)
+            buttons.append([("add tools", "tool_menu_attach")])
+        buttons.append([("done", "tool_menu_done")])
+        
+        keyboard = create_inline_keyboard(buttons)
+        send_telegram_message(chat_id, response, keyboard)
 
     except Exception as e:
         print(f"Error in handle_tool_list: {str(e)}")
         send_telegram_message(chat_id, f"❌ Error listing tools: {str(e)}")
         raise
+
+def handle_tool_attach_menu(user_id: str, chat_id: str, page: int = 0):
+    """
+    Show paginated menu for attaching tools
+    """
+    try:
+        from letta_client import Letta
+        
+        # Get user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            send_telegram_message(chat_id, "(need to authenticate first - use /login)")
+            return
+            
+        if not user_credentials:
+            send_telegram_message(chat_id, "(need to authenticate first - use /login)")
+            return
+            
+        # Get current project and agent
+        current_project = get_chat_project(chat_id)
+        if not current_project:
+            send_telegram_message(chat_id, "(no project set - use /projects)")
+            return
+            
+        agent_id = get_chat_agent(chat_id)
+        if not agent_id:
+            send_telegram_message(chat_id, "(no agent selected - use /agents)")
+            return
+            
+        # Initialize client
+        client = Letta(token=user_credentials["api_key"], base_url=user_credentials["api_url"])
+        
+        # Get attached tools first
+        attached_tools = client.agents.tools.list(agent_id=agent_id)
+        attached_tool_ids = {tool.id for tool in attached_tools}
+        
+        # Get available tools with pagination
+        page_size = 8
+        
+        # Get all tools and filter (since API doesn't support filtering)
+        all_tools = client.tools.list()
+        available_tools = [tool for tool in all_tools if tool.id not in attached_tool_ids]
+        
+        if not available_tools:
+            response = "(all tools already attached)"
+            keyboard = create_inline_keyboard([[("back", "tool_menu_back")]])
+            send_telegram_message(chat_id, response, keyboard)
+            return
+        
+        # Calculate pagination
+        total_tools = len(available_tools)
+        total_pages = (total_tools + page_size - 1) // page_size
+        start_idx = page * page_size
+        end_idx = min(start_idx + page_size, total_tools)
+        
+        # Get tools for current page
+        page_tools = available_tools[start_idx:end_idx]
+        
+        # Build response
+        response = f"(add tools - page {page + 1}/{total_pages})\n\n"
+        response += f"showing {start_idx + 1}-{end_idx} of {total_tools} available:\n\n"
+        
+        buttons = []
+        
+        # Show tools for current page
+        for tool in page_tools:
+            response += f"• {tool.name}\n"
+            buttons.append([(tool.name, f"attach_tool_{tool.name}")])
+            
+        response += "\ntap a tool to attach it"
+        
+        # Add navigation buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(("← previous", f"tool_attach_page_{page - 1}"))
+        if page < total_pages - 1:
+            nav_buttons.append(("next →", f"tool_attach_page_{page + 1}"))
+        
+        if nav_buttons:
+            buttons.append(nav_buttons)
+            
+        buttons.append([("back", "tool_menu_back")])
+        
+        keyboard = create_inline_keyboard(buttons)
+        send_telegram_message(chat_id, response, keyboard)
+        
+    except Exception as e:
+        print(f"Error in tool attach menu: {str(e)}")
+        send_telegram_message(chat_id, "(something went wrong)")
+
+def handle_tool_detach_menu(user_id: str, chat_id: str):
+    """
+    Show menu for detaching tools
+    """
+    try:
+        from letta_client import Letta
+        
+        # Get user credentials
+        try:
+            user_credentials = get_user_credentials(user_id)
+        except Exception as cred_error:
+            send_telegram_message(chat_id, "(need to authenticate first - use /login)")
+            return
+            
+        if not user_credentials:
+            send_telegram_message(chat_id, "(need to authenticate first - use /login)")
+            return
+            
+        # Get current agent
+        agent_id = get_chat_agent(chat_id)
+        if not agent_id:
+            send_telegram_message(chat_id, "(no agent selected - use /agents)")
+            return
+            
+        # Initialize client
+        client = Letta(token=user_credentials["api_key"], base_url=user_credentials["api_url"])
+        
+        # Get attached tools
+        attached_tools = client.agents.tools.list(agent_id=agent_id)
+        
+        if not attached_tools:
+            response = "(no tools to remove)"
+            keyboard = create_inline_keyboard([[("back", "tool_menu_back")]])
+            send_telegram_message(chat_id, response, keyboard)
+            return
+            
+        # Show attached tools with buttons
+        response = f"(remove tools - {len(attached_tools)} attached)\n\n"
+        buttons = []
+        
+        # List ALL attached tools
+        for tool in attached_tools:
+            response += f"• {tool.name}\n"
+            
+        response += "\n"
+        
+        # Create buttons for ALL tools (Telegram allows up to 100 buttons)
+        for tool in attached_tools:
+            buttons.append([(tool.name, f"detach_tool_{tool.name}")])
+            
+        buttons.append([("back", "tool_menu_back")])
+        
+        keyboard = create_inline_keyboard(buttons)
+        send_telegram_message(chat_id, response, keyboard)
+        
+    except Exception as e:
+        print(f"Error in tool detach menu: {str(e)}")
+        send_telegram_message(chat_id, "(something went wrong)")
 
 def handle_tool_attach(client, project_id: str, agent_id: str, tool_name: str, chat_id: str):
     """
@@ -3035,15 +3491,50 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
             else:
                 header = f"**Projects ({len(projects)}):**"
 
-            # Build clean format
-            response = f"{header}\n\n"
+            # Get current project
+            current_project = get_chat_project(chat_id)
+            current_project_id = current_project["project_id"] if current_project else None
+            
+            # Build clean format with limited buttons
+            response = "(projects)\n\n"
+            
+            if current_project_id:
+                response += f"currently in: {current_project.get('project_name', 'unknown')}\n\n"
 
+            response += f"available ({len(projects)}):\n"
+            
+            # Show first 10 projects in detail
+            for project in projects[:10]:
+                # Count agents in this project (skip for performance if many projects)
+                if len(projects) <= 5:
+                    try:
+                        agents = client.agents.list(project_id=project.id, limit=1)
+                        agent_count = len(agents) if agents else 0
+                        response += f"• {project.name} ({agent_count} agents)\n"
+                    except:
+                        response += f"• {project.name}\n"
+                else:
+                    response += f"• {project.name}\n"
+            
+            if len(projects) > 10:
+                response += f"\n...and {len(projects) - 10} more\n"
+            
+            response += "\n"
+            
+            # Only show buttons for first 5 projects (excluding current)
+            buttons = []
+            button_count = 0
             for project in projects:
-                response += f"{project.name} (`{project.slug}`)\n"
-                response += f"ID: `{project.id}`\n\n"
-            response += "**Usage:** `/project <project_id>` to select a project"
+                if project.id != current_project_id and button_count < 5:
+                    buttons.append([(f"switch to {project.name[:20]}", f"switch_project_{project.id}")])
+                    button_count += 1
+            
+            if len(projects) > 5:
+                response += "(showing first 5 as buttons)\n"
+            response += "type /project <id> to select any project"
 
-            send_telegram_message(chat_id, response)
+            keyboard = create_inline_keyboard(buttons) if buttons else None
+            send_telegram_message(chat_id, response, keyboard)
 
         except ApiError as e:
             send_telegram_message(chat_id, f"❌ Letta API Error: {e}")
@@ -3313,9 +3804,10 @@ def download_telegram_image(file_id: str, bot_token: str) -> tuple[str, str]:
     
     return image_data, media_type
 
-def send_telegram_message(chat_id: str, text: str):
+def send_telegram_message(chat_id: str, text: str, reply_markup: dict = None):
     """
     Send a message to Telegram chat, splitting long messages intelligently
+    Optionally includes inline keyboard buttons
     """
     try:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -3345,6 +3837,10 @@ def send_telegram_message(chat_id: str, text: str):
                 "parse_mode": "MarkdownV2"
             }
             
+            # Only add reply_markup to the last chunk
+            if reply_markup and i == len(chunks) - 1:
+                payload["reply_markup"] = json.dumps(reply_markup)
+            
             response = requests.post(url, data=payload, timeout=10)
             if response.status_code != 200:
                 error_msg = f"Telegram API error: {response.status_code} - {response.text}"
@@ -3359,6 +3855,42 @@ def send_telegram_message(chat_id: str, text: str):
         print(f"Error sending Telegram message: {str(e)}")
         # Re-raise the exception to preserve call stack in logs
         raise
+
+def create_inline_keyboard(buttons: list) -> dict:
+    """
+    Create an inline keyboard markup from a list of button configurations
+    
+    Args:
+        buttons: List of button rows, where each row is a list of (text, callback_data) tuples
+                 or a list of strings for simple single-column buttons
+    
+    Returns:
+        dict: Inline keyboard markup for Telegram API
+    """
+    keyboard = []
+    
+    for row in buttons:
+        if isinstance(row, list):
+            # Multiple buttons in a row
+            keyboard_row = []
+            for button in row:
+                if isinstance(button, tuple):
+                    text, callback_data = button
+                    keyboard_row.append({"text": text, "callback_data": callback_data})
+                else:
+                    # Simple text button
+                    keyboard_row.append({"text": button, "callback_data": button.lower().replace(" ", "_")})
+            keyboard.append(keyboard_row)
+        else:
+            # Single button in a row
+            if isinstance(row, tuple):
+                text, callback_data = row
+                keyboard.append([{"text": text, "callback_data": callback_data}])
+            else:
+                # Simple text button
+                keyboard.append([{"text": row, "callback_data": row.lower().replace(" ", "_")}])
+    
+    return {"inline_keyboard": keyboard}
 
 @app.function(image=image, secrets=[modal.Secret.from_name("telegram-bot")])
 @modal.fastapi_endpoint(method="GET")
