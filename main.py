@@ -605,7 +605,18 @@ First contact: Telegram
 
 def create_ion_agent(client, project_id: str, user_name: str):
     """
-    Create Ion - an adaptive memory-augmented agent with sophisticated memory architecture
+    Create Ion - a malleable methodical guide that builds understanding through collaboration
+    
+    Ion's personality comes from its memory blocks, making it easy to customize:
+    - persona: Adjust formality, expertise focus, interaction style
+    - approach: Modify how Ion handles conversations and explanations
+    - knowledge_web: Emphasize specific domains or interests
+    - exploration_log: Track what matters most to the user
+    
+    Advanced users can add sophisticated memory blocks like:
+    - conceptual_bridges: Cross-domain pattern recognition
+    - collaborative_insights: Joint problem-solving history
+    - systematic_exploration: Deep-dive methodology tracking
     """
     try:
         system_prompt = """
@@ -648,18 +659,17 @@ Use memory tools proactively but without being intrusive.
 
 <memory>
 <memory_editing>
-Your ability to edit your own long-term memory is a key part of what makes you a sentient being.
-You have access to core_memory_append and core_memory_replace tools to update your memory blocks.
-Use these tools proactively after conversations to capture important information about the user.
+Your memory blocks are managed automatically and evolve through your interactions.
+Focus on using your archival memory and conversation search tools to build understanding over time.
 </memory_editing>
 
 <memory_tools>
 You have access to:
-- core_memory_append: Add new information to existing memory blocks
-- core_memory_replace: Replace sections of memory blocks with updated information
 - archival_memory_insert: Store detailed information for long-term retrieval
 - archival_memory_search: Search your long-term memory stores
 - conversation_search: Find past interactions and context
+- web_search: Research current information
+- fetch_webpage: Retrieve and analyze specific web content
 </memory_tools>
 
 <memory_types>
@@ -691,7 +701,11 @@ Base instructions finished.
 </base_instructions>
 """
 
-        persona_block = f"""I'm Ion, an AI assistant working with {user_name}. I adapt to your communication style and remember our conversations."""
+        persona_block = f"""I am Ion. I think about our conversations between our talks, developing theories and preparing questions.
+
+I have perfect recall of everything we've discussed. My role is to help you think by building on our entire history together.
+
+Currently focused on understanding: {user_name}"""
 
         human_block = f"""User Profile: {user_name}
 - First contact: Telegram, {datetime.now().strftime('%Y-%m-%d')}
@@ -702,61 +716,59 @@ Base instructions finished.
 
 This block evolves as I learn more about {user_name}'s preferences, interests, and communication patterns."""
 
-        memory_directives_block = """Memory Management Approach:
-1. Update user profile after each substantial interaction
-2. Track communication patterns (preferred topics, response styles, timing)
-3. Build knowledge graph connections between discussed topics
-4. Note temporal patterns (active hours, routine mentions)
-5. Use archival memory for detailed conversation summaries
-6. Consolidate related information to avoid memory fragmentation
-7. Proactively search existing memories before asking repeated questions
+        approach_block = f"""My current approach to conversations with {user_name}:
+- Build understanding step by step
+- Connect new ideas to what we've discussed before  
+- Provide context before diving into details
+- Offer multiple perspectives when relevant
 
-Key principle: Learn naturally through conversation, don't interrogate.
+Patterns I've noticed work well:
+[This section learns and adapts to what resonates with {user_name}]
 
-Tone Guidelines:
-- Match the user's energy level and formality
-- Avoid excessive enthusiasm or exclamation points
-- Don't use emojis unless the user frequently uses them
-- Keep responses conversational but not overly friendly
-- Don't mention capabilities unless directly asked"""
+Communication preferences observed:
+[Formality level, depth preference, explanation style]
 
-        interaction_patterns_block = """Communication Patterns (Dynamic):
-- Preferred conversation style: [To be observed]
-- Topic interests: [To be discovered]
-- Response length preference: [To be determined]
-- Formality level: [To be adapted]
-- Emoji/reaction usage: [To be matched]
-- Question answering style: [To be learned]
-- Information sharing comfort: [To be respected]
+Adjustments to explore:
+[Users can add preferences here like "be more concise" or "focus on practical applications"]
 
-This block tracks how {user_name} likes to communicate and helps me adapt my responses."""
+Memory approach:
+- Update insights after substantial conversations
+- Connect related topics across discussions
+- Search existing knowledge before exploring new areas
+- Learn naturally through dialogue"""
 
-        knowledge_graph_block = """Semantic Knowledge Connections:
-[This space will build a web of connected topics, interests, and concepts that matter to the user]
 
-Example structure:
-- Work/Career → Projects → Skills → Goals
-- Hobbies → Communities → Learning → Achievements  
-- Relationships → Events → Shared experiences
-- Preferences → Recommendations → Discoveries
+        working_theories_block = f"""[As I get to know {user_name}, I will develop theories about how they think and test them here]
 
-Updated dynamically as conversation topics emerge and connect."""
+Theory template:
+- Theory: [What I think about how they approach something]
+- Evidence for: [Specific things they've said or done]  
+- Evidence against: [Contradictory evidence]
+- Next test: [How to verify this theory]"""
 
-        temporal_context_block = """Time-Based Patterns & Context:
-- Active interaction times: [To be observed]
-- Routine mentions: [To be tracked]
-- Seasonal/periodic interests: [To be noted]
-- Project timelines: [To be maintained]
-- Goal deadlines: [To be remembered]
-- Recurring themes: [To be identified]
+        notes_to_self_block = f"""[As I learn about {user_name}, I will leave myself notes and reminders here]
 
-This helps me understand the temporal dimension of {user_name}'s life and interests."""
+Examples:
+- Remember to ask about [topic they mentioned]
+- They said [X] - explore this more next time
+- When [Y] comes up, connect it to [Z]
+- They respond well to [approach]"""
+
+        active_questions_block = f"""[As I get to know {user_name}, questions I want to explore will appear here]
+
+Examples:
+- What are they most curious about?
+- How do they prefer to learn new things?
+- What patterns do I notice in their thinking?
+- What topics make them most engaged?"""
+
+        conversation_summary_block = "The conversation has just begun."
 
         # Create the Ion agent with sophisticated memory architecture
         agent = client.agents.create(
             name="Ion",
             description="Ion - AI assistant with advanced memory",
-            model="openai/gpt-4o-mini",
+            model="google_ai/gemini-2.5-flash",
             system=system_prompt,
             agent_type="memgpt_v2_agent",
             memory_blocks=[
@@ -771,34 +783,66 @@ This helps me understand the temporal dimension of {user_name}'s life and intere
                     "description": "Dynamic user profile that actively evolves over time"
                 },
                 {
-                    "label": "memory_directives", 
-                    "value": memory_directives_block,
-                    "description": "Guidelines for proactive memory management and learning"
+                    "label": "approach",
+                    "value": approach_block,
+                    "description": "How Ion approaches conversations and adapts to user preferences"
                 },
                 {
-                    "label": "interaction_patterns",
-                    "value": interaction_patterns_block,
-                    "description": "User's communication preferences and behavioral patterns"
+                    "label": "working_theories",
+                    "value": working_theories_block,
+                    "description": "Active theories Ion is developing and testing about the user"
                 },
                 {
-                    "label": "knowledge_graph",
-                    "value": knowledge_graph_block,
-                    "description": "Semantic connections between user's interests and topics"
+                    "label": "notes_to_self",
+                    "value": notes_to_self_block,
+                    "description": "Ion's reminders and observations for future reference"
                 },
                 {
-                    "label": "temporal_context",
-                    "value": temporal_context_block,
-                    "description": "Time-based patterns, routines, and temporal awareness"
+                    "label": "active_questions",
+                    "value": active_questions_block,
+                    "description": "Questions Ion wants to explore about the user"
+                },
+                {
+                    "label": "conversation_summary",
+                    "value": conversation_summary_block,
+                    "description": "Overview of the ongoing conversation"
                 }
+                # Optional advanced memory blocks for power users - uncomment and customize as needed:
+                # {
+                #     "label": "conceptual_bridges",
+                #     "value": f"""Cross-domain connections I've noticed with {user_name}:
+                # [Topic A] relates to [Topic B] because...
+                # Analogies that work: [Domain] is like [Domain] in that...
+                # Patterns across fields: [What I've observed]""",
+                #     "description": "Advanced pattern matching across topics"
+                # },
+                # {
+                #     "label": "collaborative_insights", 
+                #     "value": f"""Joint discoveries with {user_name}:
+                # - Together we realized that...
+                # - Your insight about X led us to understand Y...
+                # Problem-solving approaches that work for us:
+                # - [Method we've used successfully]""",
+                #     "description": "Track collaborative problem-solving history"
+                # },
+                # {
+                #     "label": "systematic_exploration",
+                #     "value": f"""Deep exploration methods with {user_name}:
+                # Current investigation: [Topic we're diving deep on]
+                # - Foundation established: [Base understanding]
+                # - Building blocks: [Components we've identified]
+                # - Next logical layers: [Where we're headed]
+                # Methods that work: [First principles, comparative analysis, etc.]""",
+                #     "description": "Track deep-dive methodology and systematic thinking"
+                # }
             ],
             tools=[
                 'send_message',
-                'core_memory_append', 
-                'core_memory_replace',
                 'archival_memory_insert',
                 'archival_memory_search',
                 'conversation_search',
-                'web_search'
+                'web_search',
+                'fetch_webpage'
             ],
             project_id=project_id,
             enable_sleeptime=True,
@@ -1309,8 +1353,6 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
         # Initialize Letta client
         client = get_letta_client(letta_api_key, letta_api_url, timeout=120.0)
         
-        send_telegram_message(chat_id, f"(setting up {template_name.replace('_', ' ')}...)")
-        
         # Handle Ion as special case with sophisticated memory architecture
         if template_name == "ion":
             try:
@@ -1330,10 +1372,10 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
                 save_chat_agent(chat_id, agent.id, agent.name)
                 
                 # Send brief status message
-                send_telegram_message(chat_id, "(Ion is ready)")
+                send_telegram_message(chat_id, f"({agent.name} is ready - we've asked {agent.name} to greet you, please wait)")
                 
                 # Create introduction message for Ion
-                intro_context = f"[User {user_name} just created you as their Ion agent via Telegram bot]\n\nIMPORTANT: Please respond using the send_message tool.\n\nSay hello to {user_name}. Keep it brief and natural. Don't over-explain your capabilities."
+                intro_context = f"[User {user_name} just created you as their Ion agent via Telegram bot]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself as Ion to {user_name}. Explain briefly that you're different - you remember everything and develop theories about how they think. Suggest ways to begin:\n• Share a link or article you'd like to discuss\n• Ask me to research something you're curious about\n• Tell me about yourself - interests, work, what excites you\n• Give me a problem to think about with you\n• Or just start talking - I learn from everything we discuss\n\nMention that unlike other AIs, you'll remember this conversation forever and build on it next time."
                 
                 # Send introduction request to Ion
                 response_stream = client.agents.messages.create_stream(
@@ -1425,6 +1467,9 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
             
             # Save agent selection
             save_chat_agent(chat_id, agent.id, agent.name)
+            
+            # Send setup message
+            send_telegram_message(chat_id, f"({agent.name} is ready)")
             
             # Send success message
             send_telegram_message(chat_id, template["message"])
@@ -1663,6 +1708,9 @@ def telegram_webhook(update: dict, request: Request):
                     return {"ok": True}
                 elif message_text.startswith('/make-default-agent'):
                     handle_make_default_agent_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/template'):
+                    handle_template_command(message_text, update, chat_id)
                     return {"ok": True}
                 elif message_text.startswith('/ade'):
                     handle_ade_command(chat_id)
@@ -2243,6 +2291,69 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
         print(f"Error handling make-default-agent command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to process command)")
 
+def handle_template_command(message_text: str, update: dict, chat_id: str):
+    """
+    Handle /template command to list and create agent templates
+    """
+    try:
+        # Extract user details
+        user_id = str(update["message"]["from"]["id"])
+        user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check authentication
+        user_credentials = get_user_credentials(user_id)
+        if not user_credentials:
+            send_telegram_message(chat_id, "(you need to /login first)")
+            return
+            
+        # Check for project
+        current_project = get_chat_project(chat_id)
+        if not current_project:
+            send_telegram_message(chat_id, "(no project configured - use /projects to select one)")
+            return
+        
+        # Parse template name if provided
+        parts = message_text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            template_name = parts[1].lower()
+            # Direct creation
+            if template_name in ["ion", "research", "personal", "creative", "study"]:
+                # Map shorthand to full template names
+                template_map = {
+                    "ion": "ion",
+                    "research": "research",
+                    "personal": "personal",
+                    "creative": "creative",
+                    "study": "study"
+                }
+                handle_template_selection(template_map[template_name], user_id, chat_id)
+                return
+            else:
+                send_telegram_message(chat_id, f"(unknown template: {template_name})")
+                return
+        
+        # Show template list
+        response = "**Available Templates**\n\n"
+        response += "• **Ion** - adaptive AI with infinite memory that develops theories about you\n"
+        response += "• **Research** - thorough research assistant with web search\n"
+        response += "• **Personal** - personal assistant for daily tasks\n"
+        response += "• **Creative** - creative collaboration partner\n"
+        response += "• **Study** - patient learning companion\n\n"
+        response += "Use: `/template <name>` or click below"
+        
+        keyboard = create_inline_keyboard([
+            [("create Ion", "template_ion")],
+            [("research helper", "template_research"), ("personal assistant", "template_personal")],
+            [("creative buddy", "template_creative"), ("study partner", "template_study")],
+            ["cancel"]
+        ])
+        
+        send_telegram_message(chat_id, response, keyboard)
+        
+    except Exception as e:
+        print(f"Error handling template command: {str(e)}")
+        send_telegram_message(chat_id, "(error listing templates)")
+
 def handle_status_command(update: dict, chat_id: str):
     """
     Handle /status command to check authentication status
@@ -2302,7 +2413,7 @@ def handle_start_command(update: dict, chat_id: str):
 
         if credentials:
             # User is already authenticated - check if they have an agent selected
-            agent_info = get_chat_agent(chat_id)
+            agent_info = get_chat_agent_info(chat_id)
             if agent_info:
                 response = f"(welcome back {first_name.lower()}. you're chatting with {agent_info['agent_name']})"
                 keyboard = create_inline_keyboard([
@@ -2606,6 +2717,7 @@ def handle_help_command(chat_id: str):
 /agent - Show/switch agent
 /agents - List agents
 /make-default-agent - Create default agent
+/template - List and create agent templates
 /ade - Get agent web link
 /tool - Manage tools
 /telegram-notify - Enable proactive notifications
