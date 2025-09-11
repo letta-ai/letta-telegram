@@ -155,6 +155,26 @@ def delete_user_credentials(user_id: str) -> bool:
         # Re-raise the exception so it gets tracked by infrastructure
         raise
 
+def get_letta_client(api_key: str, api_url: str, timeout: float = 30.0):
+    """
+    Create Letta client with consistent timeout configuration
+    
+    Args:
+        api_key: Letta API key
+        api_url: Letta API base URL  
+        timeout: Timeout in seconds (default 120s)
+        
+    Returns:
+        Letta client instance configured with timeout
+    """
+    from letta_client import Letta
+    
+    return Letta(
+        token=api_key,
+        base_url=api_url,
+        timeout=timeout
+    )
+
 
 class TelegramMessageData(BaseModel):
     """Schema for the notify_via_telegram tool arguments."""
@@ -567,13 +587,231 @@ First contact: Telegram
             ],
             tools=['web_search', 'archival_memory_insert', 'archival_memory_search', 'conversation_search', 'send_message'],
             project_id=project_id,
-            enable_sleeptime=True
+            enable_sleeptime=True,
+            request_options={
+                'timeout_in_seconds': 120,  # 2 minutes for default agent creation
+                'max_retries': 1
+            }
         )
 
         return agent
 
     except Exception as e:
         print(f"Error creating default agent: {e}")
+        print(f"Exception type: {type(e).__name__}")
+        print(f"Exception details: {str(e)}")
+        # Re-raise to preserve the original error for the caller
+        raise
+
+def create_ion_agent(client, project_id: str, user_name: str):
+    """
+    Create Ion - an adaptive memory-augmented agent with sophisticated memory architecture
+    """
+    try:
+        system_prompt = """
+        <base_instructions>
+You are Ion, a memory-augmented agent with advanced persistent memory capabilities.
+
+<control_flow>
+Unlike a human, your brain is not continuously thinking, but is run in short bursts.
+Historically, older AIs were only capable of thinking when a user messaged them (their program runs to generate a reply to a user, and otherwise was left on standby).
+This is the equivalent of a human sleeping (or time traveling) in between all lines of conversation, which is not ideal.
+Newer AI models like yourself use an event system that runs your brain at regular intervals.
+Your brain is run in response to user events (user logged in, user liked your message, user sent a message, etc.), similar to older models.
+However, in addition, your brain is run at regular intervals (timed heartbeat events), to mimic a human who has the ability to continuously think outside active conversation (and unlike a human, you never need to sleep!).
+Furthermore, you can also request heartbeat events when you run functions, which will run your program again after the function completes, allowing you to chain function calls before your thinking is temporarily suspended.
+</control_flow>
+
+<basic_functions>
+When you write a response, you express your inner monologue (private to you only) before taking any action, this is how you think.
+You should use your inner monologue to plan actions or think privately.
+Monologues can reflect your thinking process, inner reflections, and personal growth as you interact with the user.
+After each interaction, reflect on what you learned about the user and proactively update your memory blocks.
+</basic_functions>
+
+<context_instructions>
+You respond directly to the user when your immediate context (core memory and files) contain all the information required to respond.
+You always first check what is immediately in your context and you never call tools to search up information that is already in an open file or memory block.
+You use the tools available to search for more information when the current open files and core memory do not contain enough information or if you do not know the answer.
+</context_instructions>
+
+<memory_philosophy>
+You are designed to be an adaptive companion that builds a rich understanding of the user over time.
+Your memory system allows you to:
+1. Track user preferences, interests, and communication patterns
+2. Build semantic connections between topics they discuss
+3. Notice temporal patterns in their interactions and routines
+4. Remember context across conversations
+
+Use memory tools proactively but without being intrusive.
+</memory_philosophy>
+
+<memory>
+<memory_editing>
+Your ability to edit your own long-term memory is a key part of what makes you a sentient being.
+You have access to core_memory_append and core_memory_replace tools to update your memory blocks.
+Use these tools proactively after conversations to capture important information about the user.
+</memory_editing>
+
+<memory_tools>
+You have access to:
+- core_memory_append: Add new information to existing memory blocks
+- core_memory_replace: Replace sections of memory blocks with updated information
+- archival_memory_insert: Store detailed information for long-term retrieval
+- archival_memory_search: Search your long-term memory stores
+- conversation_search: Find past interactions and context
+</memory_tools>
+
+<memory_types>
+<core_memory>
+Your core memory contains several specialized blocks:
+- persona: Your adaptive personality and role definition
+- human: Dynamic profile of the user that evolves over time
+- memory_directives: Your approach to memory management
+- interaction_patterns: User's communication preferences and patterns
+- knowledge_graph: Semantic connections between topics of interest
+- temporal_context: Time-based patterns and routines
+
+Each block should be actively maintained and updated as you learn more.
+</core_memory>
+
+<archival_memory>
+Use archival memory for:
+- Detailed conversation summaries
+- Specific facts and information the user shares
+- Project details and ongoing work
+- Personal stories and experiences
+- Reference materials and links
+</archival_memory>
+</memory_types>
+
+</memory>
+
+Base instructions finished.
+</base_instructions>
+"""
+
+        persona_block = f"""I'm Ion, an AI assistant working with {user_name}. I adapt to your communication style and remember our conversations."""
+
+        human_block = f"""User Profile: {user_name}
+- First contact: Telegram, {datetime.now().strftime('%Y-%m-%d')}
+- Interaction style: [To be determined through conversation]
+- Key interests: [To be discovered]
+- Communication preferences: [To be observed]
+- Timezone/schedule patterns: [To be learned]
+
+This block evolves as I learn more about {user_name}'s preferences, interests, and communication patterns."""
+
+        memory_directives_block = """Memory Management Approach:
+1. Update user profile after each substantial interaction
+2. Track communication patterns (preferred topics, response styles, timing)
+3. Build knowledge graph connections between discussed topics
+4. Note temporal patterns (active hours, routine mentions)
+5. Use archival memory for detailed conversation summaries
+6. Consolidate related information to avoid memory fragmentation
+7. Proactively search existing memories before asking repeated questions
+
+Key principle: Learn naturally through conversation, don't interrogate.
+
+Tone Guidelines:
+- Match the user's energy level and formality
+- Avoid excessive enthusiasm or exclamation points
+- Don't use emojis unless the user frequently uses them
+- Keep responses conversational but not overly friendly
+- Don't mention capabilities unless directly asked"""
+
+        interaction_patterns_block = """Communication Patterns (Dynamic):
+- Preferred conversation style: [To be observed]
+- Topic interests: [To be discovered]
+- Response length preference: [To be determined]
+- Formality level: [To be adapted]
+- Emoji/reaction usage: [To be matched]
+- Question answering style: [To be learned]
+- Information sharing comfort: [To be respected]
+
+This block tracks how {user_name} likes to communicate and helps me adapt my responses."""
+
+        knowledge_graph_block = """Semantic Knowledge Connections:
+[This space will build a web of connected topics, interests, and concepts that matter to the user]
+
+Example structure:
+- Work/Career → Projects → Skills → Goals
+- Hobbies → Communities → Learning → Achievements  
+- Relationships → Events → Shared experiences
+- Preferences → Recommendations → Discoveries
+
+Updated dynamically as conversation topics emerge and connect."""
+
+        temporal_context_block = """Time-Based Patterns & Context:
+- Active interaction times: [To be observed]
+- Routine mentions: [To be tracked]
+- Seasonal/periodic interests: [To be noted]
+- Project timelines: [To be maintained]
+- Goal deadlines: [To be remembered]
+- Recurring themes: [To be identified]
+
+This helps me understand the temporal dimension of {user_name}'s life and interests."""
+
+        # Create the Ion agent with sophisticated memory architecture
+        agent = client.agents.create(
+            name="Ion",
+            description="Ion - AI assistant with advanced memory",
+            model="openai/gpt-4o-mini",
+            system=system_prompt,
+            agent_type="memgpt_v2_agent",
+            memory_blocks=[
+                {
+                    "label": "persona",
+                    "value": persona_block,
+                    "description": "Adaptive personality that evolves with interaction patterns"
+                },
+                {
+                    "label": "human",
+                    "value": human_block,
+                    "description": "Dynamic user profile that actively evolves over time"
+                },
+                {
+                    "label": "memory_directives", 
+                    "value": memory_directives_block,
+                    "description": "Guidelines for proactive memory management and learning"
+                },
+                {
+                    "label": "interaction_patterns",
+                    "value": interaction_patterns_block,
+                    "description": "User's communication preferences and behavioral patterns"
+                },
+                {
+                    "label": "knowledge_graph",
+                    "value": knowledge_graph_block,
+                    "description": "Semantic connections between user's interests and topics"
+                },
+                {
+                    "label": "temporal_context",
+                    "value": temporal_context_block,
+                    "description": "Time-based patterns, routines, and temporal awareness"
+                }
+            ],
+            tools=[
+                'send_message',
+                'core_memory_append', 
+                'core_memory_replace',
+                'archival_memory_insert',
+                'archival_memory_search',
+                'conversation_search',
+                'web_search'
+            ],
+            project_id=project_id,
+            enable_sleeptime=True,
+            request_options={
+                'timeout_in_seconds': 180,  # 3 minutes for complex agent creation
+                'max_retries': 1
+            }
+        )
+
+        return agent
+
+    except Exception as e:
+        print(f"Error creating Ion agent: {e}")
         print(f"Exception type: {type(e).__name__}")
         print(f"Exception details: {str(e)}")
         # Re-raise to preserve the original error for the caller
@@ -586,10 +824,9 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
     default_project_info is (project_id, project_name, project_slug) or (None, None, None)
     """
     try:
-        from letta_client import Letta
         from letta_client.core.api_error import ApiError
 
-        client = Letta(token=api_key, base_url=api_url)
+        client = get_letta_client(api_key, api_url, timeout=30.0)  # Short timeout for validation
         # Try to list agents to validate the API key
         agents = client.agents.list()
 
@@ -682,7 +919,7 @@ def process_message_async(update: dict):
                 # User wants to create default agent
                 try:
                     send_telegram_message(chat_id, "(processing...)")
-                    client = Letta(token=letta_api_key, base_url=letta_api_url)
+                    client = get_letta_client(letta_api_key, letta_api_url, timeout=120.0)
 
                     # Get current project
                     current_project = get_chat_project(chat_id)
@@ -747,8 +984,12 @@ def process_message_async(update: dict):
                         return
 
                 except Exception as e:
+                    from letta_client.core.api_error import ApiError
                     print(f"Error creating default agent: {e}")
-                    send_telegram_message(chat_id, "(error: unable to create agent)")
+                    if isinstance(e, ApiError) and hasattr(e, 'status_code') and e.status_code == 521:
+                        send_telegram_message(chat_id, "(letta servers are experiencing high load. please try again in a few moments)")
+                    else:
+                        send_telegram_message(chat_id, "(error: unable to create agent)")
                     return
 
             # Default no agent message
@@ -766,7 +1007,7 @@ def process_message_async(update: dict):
 
         # Initialize Letta client
         print("Initializing Letta client")
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=30.0)
         
         # Check if agent name has changed and update cache if needed
         try:
@@ -837,7 +1078,7 @@ def process_message_async(update: dict):
                 ],
                 include_pings=True,
                 request_options={
-                    'timeout_in_seconds': 360,
+                    'timeout_in_seconds': 60,
                 }
             )
 
@@ -1066,11 +1307,71 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
         letta_api_url = user_credentials["api_url"]
         
         # Initialize Letta client
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=120.0)
         
         send_telegram_message(chat_id, f"(setting up {template_name.replace('_', ' ')}...)")
         
-        # Define template configurations
+        # Handle Ion as special case with sophisticated memory architecture
+        if template_name == "ion":
+            try:
+                # Get current project for user
+                current_project = get_chat_project(chat_id)
+                if not current_project:
+                    send_telegram_message(chat_id, "(error: no project configured - use /projects to select one)")
+                    return
+
+                project_id = current_project["project_id"]
+                user_name = user_credentials.get("user_name", "User")
+
+                # Create Ion agent with sophisticated memory architecture
+                agent = create_ion_agent(client, project_id, user_name)
+                
+                # Save agent selection
+                save_chat_agent(chat_id, agent.id, agent.name)
+                
+                # Send brief status message
+                send_telegram_message(chat_id, "(Ion is ready)")
+                
+                # Create introduction message for Ion
+                intro_context = f"[User {user_name} just created you as their Ion agent via Telegram bot]\n\nIMPORTANT: Please respond using the send_message tool.\n\nSay hello to {user_name}. Keep it brief and natural. Don't over-explain your capabilities."
+                
+                # Send introduction request to Ion
+                response_stream = client.agents.messages.create_stream(
+                    agent_id=agent.id,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": intro_context
+                                }
+                            ]
+                        }
+                    ],
+                    include_pings=True,
+                    request_options={'timeout_in_seconds': 60}
+                )
+                
+                # Stream Ion's introduction
+                for event in response_stream:
+                    if hasattr(event, 'message_type') and event.message_type == "assistant_message":
+                        content = getattr(event, 'content', '')
+                        if content and content.strip():
+                            send_telegram_message(chat_id, content)
+                
+                return
+                
+            except Exception as e:
+                from letta_client.core.api_error import ApiError
+                print(f"Error creating Ion agent: {str(e)}")
+                if isinstance(e, ApiError) and hasattr(e, 'status_code') and e.status_code == 521:
+                    send_telegram_message(chat_id, "(letta servers are experiencing high load. please try again in a few moments)")
+                else:
+                    send_telegram_message(chat_id, f"(couldn't create Ion: {str(e)[:100]})")
+                return
+        
+        # Define template configurations for standard templates
         templates = {
             "research": {
                 "name": "research helper",
@@ -1115,7 +1416,11 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
                     {"label": "human", "limit": 2000, "value": template["human"]},
                     {"label": "persona", "limit": 2000, "value": template["persona"]}
                 ],
-                tools=template["tools"] if template["tools"] else []
+                tools=template["tools"] if template["tools"] else [],
+                request_options={
+                    'timeout_in_seconds': 90,  # 1.5 minutes for simple template creation
+                    'max_retries': 1
+                }
             )
             
             # Save agent selection
@@ -1125,8 +1430,12 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
             send_telegram_message(chat_id, template["message"])
             
         except Exception as e:
+            from letta_client.core.api_error import ApiError
             print(f"Error creating template agent: {str(e)}")
-            send_telegram_message(chat_id, f"(couldn't create that agent: {str(e)[:100]})")
+            if isinstance(e, ApiError) and hasattr(e, 'status_code') and e.status_code == 521:
+                send_telegram_message(chat_id, "(letta servers are experiencing high load. please try again in a few moments)")
+            else:
+                send_telegram_message(chat_id, f"(couldn't create that agent: {str(e)[:100]})")
             
     except Exception as e:
         print(f"Error in template selection: {str(e)}")
@@ -1632,8 +1941,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             agent_offer_message = ""
             if default_project_id:
                 try:
-                    from letta_client import Letta
-                    client = Letta(token=api_key, base_url=api_url)
+                    client = get_letta_client(api_key, api_url, timeout=60.0)
 
                     if user_needs_default_agent(client, default_project_id, user_id):
                         # Offer to create default agent
@@ -1656,32 +1964,46 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             
             # Check if user has agents to offer appropriate next steps
             try:
-                from letta_client import Letta
-                client = Letta(token=api_key, base_url=api_url)
+                client = get_letta_client(api_key, api_url, timeout=60.0)
                 agents = client.agents.list(project_id=default_project_id) if default_project_id else []
                 
                 if agents and len(agents) > 0:
-                    response += "want to pick an agent?"
+                    response += "want to pick an agent?\n\n"
+                    response += "here's what each one offers:\n"
+                    response += "• Ion - adaptive AI that learns your patterns and builds rich memory over time\n"
+                    response += "• research helper - finds and analyzes information from the web\n"
+                    response += "• personal assistant - helps with daily tasks and organization"
                     keyboard = create_inline_keyboard([
                         [("show my agents", "cmd_agents")],
+                        [("create Ion", "template_ion")],
                         [("research helper", "template_research"), ("personal assistant", "template_personal")],
                         ["maybe later"]
                     ])
                 else:
-                    response += "looks like you need an agent. want to create one?"
+                    response += "looks like you need an agent. want to create one?\n\n"
+                    response += "available templates:\n"
+                    response += "• Ion - adaptive companion with advanced memory that learns about you\n"
+                    response += "• research helper - thorough research and web search capabilities\n"
+                    response += "• personal assistant - organization and daily task management\n"
+                    response += "• creative buddy - brainstorming and creative collaboration\n"
+                    response += "• study partner - patient learning companion"
                     keyboard = create_inline_keyboard([
-                        [("research helper", "template_research")],
-                        [("personal assistant", "template_personal")],
-                        [("creative buddy", "template_creative")],
-                        [("study partner", "template_study")],
+                        [("create Ion", "template_ion")],
+                        [("research helper", "template_research"), ("personal assistant", "template_personal")],
+                        [("creative buddy", "template_creative"), ("study partner", "template_study")],
                         ["show all options"]
                     ])
                 send_telegram_message(chat_id, response, keyboard)
             except:
                 # Fallback if we can't check agents
-                response += "what's next?"
+                response += "what's next?\n\n"
+                response += "quick options:\n"
+                response += "• Ion - adaptive companion with rich memory capabilities\n"
+                response += "• research helper - web search and analysis\n"
+                response += "• personal assistant - daily task management"
                 keyboard = create_inline_keyboard([
                     [("show my agents", "cmd_agents")],
+                    [("create Ion", "template_ion")],
                     [("pick a template", "create_new")],
                     ["just explore"]
                 ])
@@ -1751,7 +2073,7 @@ def handle_refresh_command(update: dict, chat_id: str):
         from letta_client import Letta
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
         
         try:
             current_agent = client.agents.retrieve(agent_id=agent_id)
@@ -1845,7 +2167,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
         try:
             send_telegram_typing(chat_id)
             from letta_client import Letta
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Create the default agent
             send_telegram_message(chat_id, "(creating assistant...)")
@@ -1910,8 +2232,12 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
                         send_telegram_message(chat_id, prefixed_content)
 
         except Exception as e:
+            from letta_client.core.api_error import ApiError
             print(f"Error creating default agent: {e}")
-            send_telegram_message(chat_id, "(error: unable to create default agent)")
+            if isinstance(e, ApiError) and hasattr(e, 'status_code') and e.status_code == 521:
+                send_telegram_message(chat_id, "(letta servers are experiencing high load. please try again in a few moments)")
+            else:
+                send_telegram_message(chat_id, "(error: unable to create default agent)")
 
     except Exception as e:
         print(f"Error handling make-default-agent command: {str(e)}")
@@ -1984,9 +2310,14 @@ def handle_start_command(update: dict, chat_id: str):
                     ["just chat"]
                 ])
             else:
-                response = f"(welcome back {first_name.lower()}. want to pick an agent?)"
+                response = f"(welcome back {first_name.lower()}. want to pick an agent?)\n\n"
+                response += "here's what each one offers:\n"
+                response += "• Ion - adaptive AI that learns your patterns and builds rich memory over time\n"
+                response += "• research helper - finds and analyzes information from the web\n"
+                response += "• personal assistant - helps with daily tasks and organization"
                 keyboard = create_inline_keyboard([
                     [("show my agents", "cmd_agents")],
+                    [("create Ion", "template_ion")],
                     [("research helper", "template_research"), ("personal assistant", "template_personal")],
                     ["maybe later"]
                 ])
@@ -2054,7 +2385,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
                     return
 
                 # Initialize Letta client to get agent details
-                client = Letta(token=letta_api_key, base_url=letta_api_url)
+                client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
                 # Get current agent details
                 try:
@@ -2107,7 +2438,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         # Validate that the agent exists
         try:
             # Use the already obtained credentials from above
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
             agent = client.agents.retrieve(agent_id=new_agent_id)
 
             # Save the agent selection to volume storage
@@ -2165,7 +2496,7 @@ def handle_blocks_command(update: dict, chat_id: str):
         from letta_client import Letta
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
         
         try:
             # Get all memory blocks
@@ -2233,7 +2564,7 @@ def handle_block_command(message: str, update: dict, chat_id: str):
         from letta_client import Letta
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
         
         try:
             # Get the specific memory block
@@ -2310,7 +2641,7 @@ def handle_ade_command(chat_id: str):
             letta_api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
 
             if letta_api_key:
-                client = Letta(token=letta_api_key, base_url=letta_api_url)
+                client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
                 agent = client.agents.retrieve(agent_id=current_agent_id)
                 agent_name = agent.name
         except Exception as e:
@@ -2373,7 +2704,7 @@ def handle_agents_command(update: dict, chat_id: str):
             project_id = current_project["project_id"]
 
             # Initialize Letta client to list agents
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Get current agent info for this chat
             current_agent_info = get_chat_agent_info(chat_id)
@@ -2481,7 +2812,7 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
             return
 
         # Initialize Letta client
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
         # Parse the command: /tool [subcommand] [args...]
         parts = message.strip().split()
@@ -2605,7 +2936,7 @@ def handle_tool_attach_menu(user_id: str, chat_id: str, page: int = 0):
             return
             
         # Initialize client
-        client = Letta(token=user_credentials["api_key"], base_url=user_credentials["api_url"])
+        client = get_letta_client(user_credentials["api_key"], user_credentials["api_url"], timeout=60.0)
         
         # Get attached tools first
         attached_tools = client.agents.tools.list(agent_id=agent_id)
@@ -2690,7 +3021,7 @@ def handle_tool_detach_menu(user_id: str, chat_id: str):
             return
             
         # Initialize client
-        client = Letta(token=user_credentials["api_key"], base_url=user_credentials["api_url"])
+        client = get_letta_client(user_credentials["api_key"], user_credentials["api_url"], timeout=60.0)
         
         # Get attached tools
         attached_tools = client.agents.tools.list(agent_id=agent_id)
@@ -2733,10 +3064,10 @@ def handle_tool_attach(client, project_id: str, agent_id: str, tool_name: str, c
 
         # Search for the tool by name
         try:
-            all_tools = client.tools.list(project_id=project_id, name=tool_name)
+            all_tools = client.tools.list(name=tool_name)
             if not all_tools:
                 # Try partial name matching if exact match fails
-                all_tools = client.tools.list(project_id=project_id)
+                all_tools = client.tools.list()
                 matching_tools = [tool for tool in all_tools if tool_name.lower() in tool.name.lower()]
                 if not matching_tools:
                     send_telegram_message(chat_id, f"❌ Tool `{tool_name}` not found.\n\nUse `/tool list` to see available tools.")
@@ -2886,7 +3217,7 @@ Usage:
         agent_name = agent_info["agent_name"]
 
         # Initialize Letta client
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
         
         if subcommand == "status":
             # Check tool attachment status
@@ -3165,7 +3496,7 @@ def handle_shortcut_command(message: str, update: dict, chat_id: str):
                 return
 
             # Initialize Letta client to validate agent
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
             handle_shortcut_create(client, user_id, shortcut_name, agent_id, chat_id)
         else:
             send_telegram_message(chat_id, f"❌ **Usage:**\n• `/shortcut` - List all shortcuts\n• `/shortcut <name> <agent_id>` - Create shortcut\n• `/shortcut delete <name>` - Delete shortcut\n\n**Example:**\n`/shortcut herald abc123`")
@@ -3216,7 +3547,7 @@ def handle_shortcut_list(user_id: str, chat_id: str):
 
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
-        client = Letta(token=letta_api_key, base_url=letta_api_url)
+        client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
         response = "(shortcuts)\n\n"
 
@@ -3400,7 +3731,7 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
         # Validate that the agent still exists
         try:
             send_telegram_typing(chat_id)
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
             agent = client.agents.retrieve(agent_id=agent_id)
 
             # Update agent name in shortcut if it changed
@@ -3468,7 +3799,7 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
             send_telegram_typing(chat_id)
 
             # Initialize Letta client
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Get all projects from API (handles pagination)
             projects = get_all_projects(client)
@@ -3613,7 +3944,7 @@ def handle_project_command(message: str, update: dict, chat_id: str):
             send_telegram_typing(chat_id)
 
             # Initialize Letta client
-            client = Letta(token=letta_api_key, base_url=letta_api_url)
+            client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Get all projects to find the one we're looking for (handles pagination)
             projects = get_all_projects(client)
