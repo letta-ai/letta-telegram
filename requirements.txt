@@ -3,3 +3,4 @@ fastapi[standard]>=0.104.0
 requests>=2.31.0
 pydantic>=2.0.0
 telegramify-markdown
+openai>=1.40.0

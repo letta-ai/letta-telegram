@@ -8,14 +8,21 @@ from fastapi import Request, HTTPException
 from pydantic import BaseModel, Field
 
 
-image = modal.Image.debian_slim(python_version="3.12").env({"PYTHONUNBUFFERED": "1"}).pip_install([
-    "fastapi",
-    "requests",
-    "pydantic>=2.0",
-    "telegramify-markdown",
-    "letta_client",
-    "cryptography>=3.4.8"
-])
+image = (
+    modal.Image
+    .debian_slim(python_version="3.12")
+    .env({"PYTHONUNBUFFERED": "1"})
+    .apt_install(["ffmpeg"])  # For converting Telegram voice (OGG/Opus) to mp3
+    .pip_install([
+        "fastapi",
+        "requests",
+        "pydantic>=2.0",
+        "telegramify-markdown",
+        "letta_client",
+        "cryptography>=3.4.8",
+        "openai>=1.40.0",
+    ])
+)
 
 app = modal.App("letta-telegram-bot", image=image)
 
@@ -890,7 +897,9 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("telegram-bot")
+        modal.Secret.from_name("telegram-bot"),
+        # Optional OpenAI API key for audio transcription
+        modal.Secret.from_name("openai"),
     ],
     volumes={"/data": volume},
     scaledown_window=SCALEDOWN_WINDOW,
@@ -915,12 +924,14 @@ def process_message_async(update: dict):
         user_id = str(message["from"]["id"])
         user_name = message["from"].get("username", "Unknown")
         
-        # Handle both text messages and photo messages
+        # Handle text, image, and audio messages
         has_text = "text" in message
         has_photo = "photo" in message
-        
-        if not has_text and not has_photo:
-            return  # Skip messages without text or photos
+        has_voice = "voice" in message
+        has_audio = "audio" in message
+
+        if not (has_text or has_photo or has_voice or has_audio):
+            return  # Skip messages without supported content
         
         # Extract text (either direct text or photo caption)
         message_text = message.get("text", "") or message.get("caption", "")
@@ -962,7 +973,7 @@ def process_message_async(update: dict):
 
                 # User wants to create default agent
                 try:
-                    send_telegram_message(chat_id, "(processing...)")
+                    send_telegram_message(chat_id, "(processing)")
                     client = get_letta_client(letta_api_key, letta_api_url, timeout=120.0)
 
                     # Get current project
@@ -974,7 +985,7 @@ def process_message_async(update: dict):
                     project_id = current_project["project_id"]
 
                     # Create default agent
-                    send_telegram_message(chat_id, "(creating agent Ion...)")
+                    send_telegram_message(chat_id, "(creating agent Ion)")
                     try:
                         agent = create_default_agent(client, project_id, user_name)
                     except Exception as create_error:
@@ -1097,8 +1108,67 @@ def process_message_async(update: dict):
                 # Add error message to text instead
                 message_text = f"[Image processing failed: {str(e)}]\n{message_text}"
         
+        # Process audio if present (voice note or audio file)
+        if has_voice or has_audio:
+            try:
+                # Inform user we're transcribing
+                send_telegram_message(chat_id, "(transcribing audio)")
+
+                bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+                if not bot_token:
+                    raise Exception("Missing Telegram bot token")
+                file_id = message["voice"]["file_id"] if has_voice else message["audio"]["file_id"]
+
+                tmp_in_path, original_file_path = download_telegram_file(file_id, bot_token)
+
+                # Convert and transcribe with cleanup
+                try:
+                    # Convert to supported format if needed
+                    audio_path = ensure_supported_audio(tmp_in_path)
+
+                    # Transcribe via OpenAI
+                    transcript_text = transcribe_audio_file(audio_path)
+                finally:
+                    try:
+                        if os.path.exists(tmp_in_path):
+                            os.remove(tmp_in_path)
+                    except Exception:
+                        pass
+                    try:
+                        if 'audio_path' in locals() and audio_path != tmp_in_path and os.path.exists(audio_path):
+                            os.remove(audio_path)
+                    except Exception:
+                        pass
+
+                # Add the transcript into the content parts
+                transcript_prefix = "Transcribed voice message" if has_voice else "Transcribed audio file"
+                transcript_block = f"[{transcript_prefix}]\n\n{transcript_text.strip()}"
+                content_parts.append({
+                    "type": "text",
+                    "text": transcript_block,
+                })
+
+                # If no caption or text, set a default description
+                if not message_text:
+                    message_text = "User sent an audio message."
+
+            except Exception as e:
+                print(f"Audio transcription failed: {e}")
+                # Add a note about failure and continue with any text/caption
+                fail_note = f"[Audio transcription failed: {str(e)}]"
+                content_parts.append({
+                    "type": "text",
+                    "text": fail_note,
+                })
+
         # Add text content
-        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{message_text if message_text else 'User sent an image.'}"
+        default_media_note = (
+            'User sent an image.' if has_photo and not (has_voice or has_audio) else
+            'User sent an audio message.' if (has_voice or has_audio) and not message_text else
+            ''
+        )
+        displayed_text = message_text if message_text else default_media_note
+        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{displayed_text}"
         content_parts.append({
             "type": "text",
             "text": context_message
@@ -1107,7 +1177,13 @@ def process_message_async(update: dict):
         print(f"Context message: {context_message}")
         
         # Notify user that message was received
-        send_telegram_message(chat_id, "(processing image...)" if has_photo else "(please wait)")
+        if has_photo:
+            send_telegram_message(chat_id, "(processing image)")
+        elif has_voice or has_audio:
+            # Already sent a transcription notice above
+            pass
+        else:
+            send_telegram_message(chat_id, "(please wait)")
 
         # Process agent response with streaming
         try:
@@ -1527,7 +1603,7 @@ def handle_callback_query(update: dict):
             send_telegram_message(chat_id, "(visit app.letta.com and click 'sign up' if you don't have an account. then go to settings → api keys)")
             
         elif callback_data == "got_it":
-            send_telegram_message(chat_id, "(waiting for your /login command...)")
+            send_telegram_message(chat_id, "(waiting for your /login command)")
             
         elif callback_data == "just_chat" or callback_data == "maybe_later":
             send_telegram_message(chat_id, "(alright)")
@@ -1541,7 +1617,7 @@ def handle_callback_query(update: dict):
             send_telegram_message(chat_id, response, keyboard)
             
         elif callback_data == "i_have_an_account":
-            response = "(alright. use /login <api_key> to connect)\n\nexample: /login sk-abc123..."
+            response = "(alright. use /login <api_key> to connect)\n\nexample: /login sk-abc123"
             send_telegram_message(chat_id, response)
             
         elif callback_data == "learn_more":
@@ -1683,9 +1759,11 @@ def telegram_webhook(update: dict, request: Request):
             message = update["message"]
             has_text = "text" in message
             has_photo = "photo" in message
+            has_voice = "voice" in message
+            has_audio = "audio" in message
             
-            # Skip messages without text or photos
-            if not has_text and not has_photo:
+            # Skip unsupported message types
+            if not (has_text or has_photo or has_voice or has_audio):
                 return {"ok": True}
             
             chat_id = str(message["chat"]["id"])
@@ -1763,10 +1841,15 @@ def telegram_webhook(update: dict, request: Request):
                     print("Spawning background task for text message")
                     process_message_async.spawn(update)
             else:
-                # Photo message (with or without caption) - spawn background processing
-                print(f"Received photo from {user_name} in chat {chat_id}")
+                # Media message (photo/audio/voice) - spawn background processing
+                if has_photo:
+                    print(f"Received photo from {user_name} in chat {chat_id}")
+                elif has_voice:
+                    print(f"Received voice message from {user_name} in chat {chat_id}")
+                elif has_audio:
+                    print(f"Received audio file from {user_name} in chat {chat_id}")
                 send_telegram_typing(chat_id)
-                print("Spawning background task for photo message")
+                print("Spawning background task for media message")
                 process_message_async.spawn(update)
 
     except Exception as e:
@@ -2218,7 +2301,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Create the default agent
-            send_telegram_message(chat_id, "(creating assistant...)")
+            send_telegram_message(chat_id, "(creating assistant)")
             try:
                 agent = create_default_agent(client, project_id, user_name)
             except Exception as create_error:
@@ -2846,7 +2929,7 @@ def handle_agents_command(update: dict, chat_id: str):
                 response += f"• {agent.name}\n  `{agent.id}`\n"
             
             if len(agents) > 10:
-                response += f"\n...and {len(agents) - 10} more\n"
+                response += f"\nand {len(agents) - 10} more\n"
             
             response += "\n"
             
@@ -2991,7 +3074,7 @@ def handle_tool_list(client, agent_id: str, chat_id: str):
             for tool in attached_tools[:10]:
                 response += f"• {tool.name}\n"
             if len(attached_tools) > 10:
-                response += f"• ...and {len(attached_tools) - 10} more\n"
+                response += f"• and {len(attached_tools) - 10} more\n"
         else:
             response += "no tools attached yet\n"
 
@@ -3384,7 +3467,7 @@ Use `/telegram-notify enable` to set up notifications."""
                 if not all_tools:
                     # Tool doesn't exist, register it automatically
                     print(f"DEBUG: Tool not found, registering new tool")
-                    send_telegram_message(chat_id, "🔧 **Registering notify_via_telegram tool...**")
+                    send_telegram_message(chat_id, "🔧 **Registering notify_via_telegram tool**")
                     
                     registration_result = register_notify_tool(client)
                     print(f"DEBUG: Registration result: {registration_result}")
@@ -3960,7 +4043,7 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
                     response += f"• {project.name}\n"
             
             if len(projects) > 10:
-                response += f"\n...and {len(projects) - 10} more\n"
+                response += f"\nand {len(projects) - 10} more\n"
             
             response += "\n"
             
@@ -4203,6 +4286,108 @@ def split_message_at_boundary(text: str, max_bytes: int = 4096) -> list[str]:
         chunks.append(remaining)
     
     return chunks
+
+def download_telegram_file(file_id: str, bot_token: str) -> tuple[str, str]:
+    """
+    Download any file from Telegram and save to a temp file, preserving extension.
+
+    Returns:
+        (temp_file_path, telegram_file_path)
+    """
+    import requests
+    import tempfile
+    import os as _os
+
+    # Get file info from Telegram
+    file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile"
+    file_info_response = requests.get(file_info_url, params={"file_id": file_id})
+    file_info_response.raise_for_status()
+
+    file_info = file_info_response.json()
+    if not file_info.get("ok"):
+        raise Exception(f"Failed to get file info: {file_info.get('description', 'Unknown error')}")
+
+    file_path = file_info["result"]["file_path"]
+
+    # Download the actual file
+    file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+    file_response = requests.get(file_url)
+    file_response.raise_for_status()
+
+    # Preserve extension in temp file
+    ext = ''
+    base = _os.path.basename(file_path)
+    if '.' in base:
+        ext = '.' + base.split('.')[-1]
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(file_response.content)
+        tmp_path = tmp.name
+
+    return tmp_path, file_path
+
+def ensure_supported_audio(input_path: str) -> str:
+    """
+    Ensure audio is in a format supported by OpenAI. If not, convert to mp3 via ffmpeg.
+
+    Supported extensions: mp3, mp4, mpeg, mpga, m4a, wav, webm
+    """
+    import os as _os
+    supported_exts = {'.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm'}
+    ext = _os.path.splitext(input_path)[1].lower()
+    if ext in supported_exts:
+        return input_path
+
+    # Convert using ffmpeg to mp3 mono 16k to reduce size
+    import tempfile
+    import subprocess
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_out:
+        output_path = tmp_out.name
+
+    cmd = [
+        'ffmpeg', '-y', '-i', input_path,
+        '-ac', '1', '-ar', '16000',
+        output_path
+    ]
+    try:
+        subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    except subprocess.CalledProcessError as e:
+        # Clean up if conversion failed
+        try:
+            if _os.path.exists(output_path):
+                _os.remove(output_path)
+        except Exception:
+            pass
+        raise Exception(f"ffmpeg conversion failed: {e.stderr.decode('utf-8', errors='ignore')[:500]}")
+
+    return output_path
+
+def transcribe_audio_file(audio_path: str) -> str:
+    """
+    Transcribe an audio file using OpenAI's Audio Transcriptions API.
+    Uses model from OPENAI_TRANSCRIBE_MODEL or defaults to gpt-4o-mini-transcribe.
+    """
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        raise Exception("OPENAI_API_KEY not configured; cannot transcribe audio.")
+
+    model = os.environ.get('OPENAI_TRANSCRIBE_MODEL', 'gpt-4o-mini-transcribe')
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+
+    with open(audio_path, 'rb') as f:
+        try:
+            result = client.audio.transcriptions.create(
+                model=model,
+                file=f,
+            )
+        except Exception as e:
+            raise Exception(f"OpenAI transcription error: {str(e)}")
+
+    # New SDK returns an object with .text
+    return getattr(result, 'text', '') or ''
 
 def download_telegram_image(file_id: str, bot_token: str) -> tuple[str, str]:
     """

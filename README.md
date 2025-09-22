@@ -72,17 +72,27 @@ modal secret create telegram-bot \
   TELEGRAM_WEBHOOK_SECRET=optional_secret_for_security \
   ENCRYPTION_MASTER_KEY=$ENCRYPTION_MASTER_KEY
 
+# Optional: OpenAI API key for audio transcription support
+modal secret create openai \
+  OPENAI_API_KEY=$OPENAI_API_KEY
+
 # Or if you already have them in environment variables:
 modal secret create telegram-bot \
   TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
   TELEGRAM_WEBHOOK_SECRET=$TELEGRAM_WEBHOOK_SECRET \
   ENCRYPTION_MASTER_KEY=$ENCRYPTION_MASTER_KEY
+
+# (optional) Create the OpenAI secret from an env var
+modal secret create openai \
+  OPENAI_API_KEY=$OPENAI_API_KEY
 ```
 
 **Important**: 
 - `ENCRYPTION_MASTER_KEY` is used to encrypt user API keys with per-user unique keys
 - Generate a secure random string (32+ characters) for this key
 - Keep this key secure - losing it means losing access to stored user credentials
+
+Audio transcription is enabled automatically when `OPENAI_API_KEY` is present via the `openai` secret.
 
 ### 4. Deploy to Modal
 
@@ -174,6 +184,18 @@ Your bot credentials are stored as a Modal secret:
 - `ENCRYPTION_MASTER_KEY`: Master key for encrypting user API keys (32+ characters)
 
 **User credentials are stored separately and encrypted per-user in Modal Volumes.**
+
+**`openai` secret (optional):**
+- `OPENAI_API_KEY`: Enables audio transcription of voice and audio messages
+- Optional: `OPENAI_TRANSCRIBE_MODEL` to override the default (`gpt-4o-mini-transcribe`)
+
+When the OpenAI key is not provided, the bot will still work but will not transcribe audio messages.
+
+### Audio Messages
+
+- Send voice notes or audio files to the bot, and they will be transcribed and sent to your Letta agent as text.
+- Supported formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm` (Telegram voice notes are `ogg/opus`; these are automatically converted with ffmpeg).
+- File size limit: up to 25 MB for transcription.
 
 ### Message Flow
 
