@@ -1231,10 +1231,15 @@ def process_message_async(update: dict):
                                 last_activity = current_time
 
                         elif message_type == "reasoning_message":
-                            reasoning_text = getattr(event, 'reasoning', '')
-                            content = f"(**{agent_name}** thought)\n\n{blockquote_message(reasoning_text)}"
-                            send_telegram_message(chat_id, content)
-                            last_activity = current_time
+                            # Check if user has reasoning enabled in preferences
+                            preferences = get_user_preferences(user_id)
+                            reasoning_enabled = preferences.get("reasoning_enabled", True)  # Default to enabled
+
+                            if reasoning_enabled:
+                                reasoning_text = getattr(event, 'reasoning', '')
+                                content = f"(**{agent_name}** thought)\n\n{blockquote_message(reasoning_text)}"
+                                send_telegram_message(chat_id, content)
+                                last_activity = current_time
 
                         elif message_type == "system_alert":
                             alert_message = getattr(event, 'message', '')
@@ -1838,6 +1843,9 @@ def telegram_webhook(update: dict, request: Request):
                 elif message_text.startswith('/clear-preferences'):
                     handle_clear_preferences_command(update, chat_id)
                     return {"ok": True}
+                elif message_text.startswith('/reasoning'):
+                    handle_reasoning_command(message_text, update, chat_id)
+                    return {"ok": True}
                 elif message_text.startswith('/blocks'):
                     handle_blocks_command(update, chat_id)
                     return {"ok": True}
@@ -2185,6 +2193,40 @@ def handle_clear_preferences_command(update: dict, chat_id: str):
     except Exception as e:
         print(f"Error clearing preferences: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to clear preferences)")
+
+def handle_reasoning_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /reasoning command to enable/disable reasoning messages
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+
+        # Parse the command
+        parts = message.split()
+        if len(parts) < 2:
+            send_telegram_message(chat_id, "Usage: /reasoning enable|disable")
+            return
+
+        action = parts[1].lower()
+
+        # Get current preferences
+        preferences = get_user_preferences(user_id)
+
+        if action == "enable":
+            preferences["reasoning_enabled"] = True
+            save_user_preferences(user_id, preferences)
+            send_telegram_message(chat_id, "✅ Reasoning messages enabled")
+        elif action == "disable":
+            preferences["reasoning_enabled"] = False
+            save_user_preferences(user_id, preferences)
+            send_telegram_message(chat_id, "❌ Reasoning messages disabled")
+        else:
+            send_telegram_message(chat_id, "Usage: /reasoning enable|disable")
+
+    except Exception as e:
+        print(f"Error handling reasoning command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to update reasoning preferences)")
 
 def handle_refresh_command(update: dict, chat_id: str):
     """
@@ -2810,7 +2852,7 @@ def handle_help_command(chat_id: str):
     """
     help_text = """Commands:
 /start - Setup guide
-/login <api_key> - Authenticate  
+/login <api_key> - Authenticate
 /logout - Remove credentials
 /status - Check authentication
 /project - Show/switch project
@@ -2826,6 +2868,7 @@ def handle_help_command(chat_id: str):
 /switch <name> - Quick switch
 /blocks - List memory blocks
 /block <label> - View memory block
+/reasoning enable|disable - Show/hide reasoning messages
 /clear-preferences - Reset preferences
 /refresh - Update cached agent info
 /help - Show commands
