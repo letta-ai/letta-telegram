@@ -1051,7 +1051,7 @@ def process_message_async(update: dict):
             response = "(no agent selected)\n\nchoose an agent to start chatting"
             keyboard = create_inline_keyboard([
                 [("view my agents", "cmd_agents")],
-                [("create new", "template_research"), ("use template", "template_personal")]
+                [("create Ion", "template_ion")]
             ])
             send_telegram_message(chat_id, response, keyboard)
             return
@@ -1494,75 +1494,9 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
                     send_telegram_message(chat_id, f"(couldn't create Ion: {str(e)[:100]})")
                 return
         
-        # Define template configurations for standard templates
-        templates = {
-            "research": {
-                "name": "research helper",
-                "persona": "you are a thorough research assistant who helps find, analyze, and synthesize information. you're curious and detail-oriented.",
-                "human": "i need help with research and analysis",
-                "tools": ["web_search"],
-                "message": "(research helper ready)\n\ni can search the web and help you dig into topics"
-            },
-            "personal": {
-                "name": "personal assistant",
-                "persona": "you are a helpful personal assistant focused on organization and daily tasks. you're proactive and thoughtful.",
-                "human": "i want help managing my daily life",
-                "tools": [],
-                "message": "(personal assistant here)\n\ni'll help keep track of things"
-            },
-            "creative": {
-                "name": "creative buddy",
-                "persona": "you are a creative collaborator who helps with brainstorming and creative projects. you're imaginative and encouraging.",
-                "human": "i enjoy creative projects and brainstorming",
-                "tools": [],
-                "message": "(creative buddy activated)\n\nlet's make something interesting"
-            },
-            "study": {
-                "name": "study partner",
-                "persona": "you are a patient study companion who helps with learning and retention. you're encouraging and methodical.",
-                "human": "i'm a student who wants help learning",
-                "tools": [],
-                "message": "(study partner online)\n\nwe can work through problems together"
-            }
-        }
-        
-        template = templates.get(template_name)
-        if not template:
-            send_telegram_message(chat_id, "(hmm, don't know that template)")
-            return
-        
-        try:
-            # Create the agent with template configuration
-            agent = client.agents.create(
-                name=template["name"],
-                memory_blocks=[
-                    {"label": "human", "limit": 2000, "value": template["human"]},
-                    {"label": "persona", "limit": 2000, "value": template["persona"]}
-                ],
-                tools=template["tools"] if template["tools"] else [],
-                request_options={
-                    'timeout_in_seconds': 90,  # 1.5 minutes for simple template creation
-                    'max_retries': 1
-                }
-            )
-            
-            # Save agent selection
-            save_chat_agent(chat_id, agent.id, agent.name)
-            
-            # Send setup message
-            send_telegram_message(chat_id, f"({agent.name} is ready)")
-            
-            # Send success message
-            send_telegram_message(chat_id, template["message"])
-            
-        except Exception as e:
-            from letta_client.core.api_error import ApiError
-            print(f"Error creating template agent: {str(e)}")
-            if isinstance(e, ApiError) and hasattr(e, 'status_code') and e.status_code == 521:
-                send_telegram_message(chat_id, "(letta servers are experiencing high load. please try again in a few moments)")
-            else:
-                send_telegram_message(chat_id, f"(couldn't create that agent: {str(e)[:100]})")
-            
+        # Only Ion template is available - all other requests should be redirected
+        send_telegram_message(chat_id, f"('{template_name}' template is no longer available)\n\nuse /template ion to create Ion, or /agents to see existing agents")
+
     except Exception as e:
         print(f"Error in template selection: {str(e)}")
         send_telegram_message(chat_id, "(something went wrong with the template)")
@@ -1649,10 +1583,7 @@ def handle_callback_query(update: dict):
             # Show template options
             response = "(pick a starter template)"
             keyboard = create_inline_keyboard([
-                [("research helper", "template_research")],
-                [("personal assistant", "template_personal")],
-                [("creative buddy", "template_creative")],
-                [("study partner", "template_study")]
+                [("create Ion", "template_ion")]
             ])
             send_telegram_message(chat_id, response, keyboard)
             
@@ -2121,27 +2052,18 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 if agents and len(agents) > 0:
                     response += "want to pick an agent?\n\n"
                     response += "here's what each one offers:\n"
-                    response += "• Ion - adaptive AI that learns your patterns and builds rich memory over time\n"
-                    response += "• research helper - finds and analyzes information from the web\n"
-                    response += "• personal assistant - helps with daily tasks and organization"
+                    response += "• Ion - adaptive companion with advanced memory that learns about you"
                     keyboard = create_inline_keyboard([
                         [("show my agents", "cmd_agents")],
                         [("create Ion", "template_ion")],
-                        [("research helper", "template_research"), ("personal assistant", "template_personal")],
                         ["maybe later"]
                     ])
                 else:
                     response += "looks like you need an agent. want to create one?\n\n"
                     response += "available templates:\n"
-                    response += "• Ion - adaptive companion with advanced memory that learns about you\n"
-                    response += "• research helper - thorough research and web search capabilities\n"
-                    response += "• personal assistant - organization and daily task management\n"
-                    response += "• creative buddy - brainstorming and creative collaboration\n"
-                    response += "• study partner - patient learning companion"
+                    response += "• Ion - adaptive companion with advanced memory that learns about you"
                     keyboard = create_inline_keyboard([
                         [("create Ion", "template_ion")],
-                        [("research helper", "template_research"), ("personal assistant", "template_personal")],
-                        [("creative buddy", "template_creative"), ("study partner", "template_study")],
                         ["show all options"]
                     ])
                 send_telegram_message(chat_id, response, keyboard)
@@ -2151,9 +2073,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 # Fallback if we can't check agents
                 response += "what's next?\n\n"
                 response += "quick options:\n"
-                response += "• Ion - adaptive companion with rich memory capabilities\n"
-                response += "• research helper - web search and analysis\n"
-                response += "• personal assistant - daily task management"
+                response += "• Ion - adaptive companion with advanced memory that learns about you"
                 keyboard = create_inline_keyboard([
                     [("show my agents", "cmd_agents")],
                     [("create Ion", "template_ion")],
@@ -2457,35 +2377,21 @@ def handle_template_command(message_text: str, update: dict, chat_id: str):
         parts = message_text.strip().split(maxsplit=1)
         if len(parts) > 1:
             template_name = parts[1].lower()
-            # Direct creation
-            if template_name in ["ion", "research", "personal", "creative", "study"]:
-                # Map shorthand to full template names
-                template_map = {
-                    "ion": "ion",
-                    "research": "research",
-                    "personal": "personal",
-                    "creative": "creative",
-                    "study": "study"
-                }
-                handle_template_selection(template_map[template_name], user_id, chat_id)
+            # Only Ion template is available
+            if template_name == "ion":
+                handle_template_selection("ion", user_id, chat_id)
                 return
             else:
-                send_telegram_message(chat_id, f"(unknown template: {template_name})")
+                send_telegram_message(chat_id, f"('{template_name}' template is no longer available)\n\nonly Ion is available: /template ion")
                 return
         
-        # Show template list
+        # Show template list (only Ion available)
         response = "**Available Templates**\n\n"
-        response += "• **Ion** - adaptive AI with infinite memory that develops theories about you\n"
-        response += "• **Research** - thorough research assistant with web search\n"
-        response += "• **Personal** - personal assistant for daily tasks\n"
-        response += "• **Creative** - creative collaboration partner\n"
-        response += "• **Study** - patient learning companion\n\n"
-        response += "Use: `/template <name>` or click below"
+        response += "• **Ion** - adaptive AI with infinite memory that develops theories about you\n\n"
+        response += "Use: `/template ion` or click below"
         
         keyboard = create_inline_keyboard([
             [("create Ion", "template_ion")],
-            [("research helper", "template_research"), ("personal assistant", "template_personal")],
-            [("creative buddy", "template_creative"), ("study partner", "template_study")],
             ["cancel"]
         ])
         
@@ -2564,13 +2470,10 @@ def handle_start_command(update: dict, chat_id: str):
             else:
                 response = f"(welcome back {first_name.lower()}. want to pick an agent?)\n\n"
                 response += "here's what each one offers:\n"
-                response += "• Ion - adaptive AI that learns your patterns and builds rich memory over time\n"
-                response += "• research helper - finds and analyzes information from the web\n"
-                response += "• personal assistant - helps with daily tasks and organization"
+                response += "• Ion - adaptive companion with advanced memory that learns about you"
                 keyboard = create_inline_keyboard([
                     [("show my agents", "cmd_agents")],
                     [("create Ion", "template_ion")],
-                    [("research helper", "template_research"), ("personal assistant", "template_personal")],
                     ["maybe later"]
                 ])
             send_telegram_message(chat_id, response, keyboard)

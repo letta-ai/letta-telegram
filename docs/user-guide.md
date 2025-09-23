@@ -91,7 +91,7 @@ looks like you're new here. want help getting started?
 
 **Example Output (Returning User with Agent):**
 ```
-(welcome back sarah. you're chatting with research helper)
+(welcome back sarah. you're chatting with Ion)
 
 [switch agent] [view tools] [just chat]
 ```
@@ -101,7 +101,7 @@ looks like you're new here. want help getting started?
 (welcome back sarah. want to pick an agent?)
 
 [show my agents]
-[research helper] [personal assistant]
+[create Ion]
 [maybe later]
 ```
 
@@ -126,7 +126,7 @@ Connects your Letta account to the Telegram bot. Your API key is immediately del
 want to pick an agent?
 
 [show my agents]
-[research helper] [personal assistant]
+[create Ion]
 [maybe later]
 ```
 
@@ -136,12 +136,7 @@ want to pick an agent?
 
 looks like you need an agent. want to create one?
 
-[ion (recommended)]
-[research helper]
-[personal assistant]
-[creative buddy]
-[study partner]
-[show all templates]
+[create Ion]
 ```
 
 **Expected Output (Invalid Key):**
@@ -608,14 +603,10 @@ Shows available agent templates for quick agent creation.
 **Available Templates**
 
 • **Ion** - adaptive AI with infinite memory that develops theories about you
-• **Research** - thorough research assistant with web search
-• **Personal** - personal assistant for daily tasks
-• **Creative** - creative collaboration partner
-• **Study** - patient learning companion
 
 Use: `/template <name>` or click below
 
-[Ion (recommended)] [Research] [Personal] [Creative] [Study]
+[Ion]
 ```
 
 #### `/template <name>` - Create Agent from Template
@@ -789,32 +780,12 @@ When you first connect your Letta account or need to create new agents, the bot 
 
 ### Available Templates
 
-**Ion (Recommended)**: Advanced AI assistant with sophisticated memory architecture
+**Ion**: Advanced AI assistant with sophisticated memory architecture
 - Features 6 specialized memory blocks for comprehensive understanding
 - Adapts to your communication style and remembers preferences over time
 - Professional yet conversational, matching your energy level
 - Includes memory management tools for continuous learning
 - Perfect for users who want an intelligent, adaptive assistant
-
-**Research Helper**: Specialized in finding information, web searches, and analysis
-- Pre-configured with web search and calculator tools
-- Optimized persona for research tasks
-- Great for fact-checking and data gathering
-
-**Personal Assistant**: All-purpose helper for daily tasks and organization
-- Includes scheduling, reminders, and general assistance capabilities
-- Balanced tool set for versatile use
-- Maintains context across personal conversations
-
-**Creative Buddy**: Focused on brainstorming and creative projects
-- Enhanced for ideation and creative problem solving
-- Specialized prompts for artistic and creative tasks
-- Helpful for writing, design, and innovation
-
-**Study Partner**: Designed for learning and educational support
-- Optimized for explaining concepts and testing knowledge
-- Patient, encouraging personality for learning environments
-- Great for students and continuous learners
 
 ### Using Templates
 
@@ -824,15 +795,10 @@ Templates appear as buttons when you first login or when you have no agents:
 
 looks like you need an agent. want to create one?
 
-[ion (recommended)]
-[research helper]
-[personal assistant]
-[creative buddy]
-[study partner]
-[show all templates]
+[create Ion]
 ```
 
-Simply tap a template button to instantly create and configure a new agent with that specialization. Ion is recommended for most users due to its advanced memory capabilities and adaptive personality.
+Simply tap the Ion button to instantly create and configure a new agent with advanced memory capabilities and adaptive personality.
 
 ### Ion's Advanced Memory System
 
@@ -867,7 +833,7 @@ The bot uses interactive buttons throughout for easier navigation:
 
 Example interactive flow:
 ```
-/start → [sure] → /login key → [research helper] → ready to chat
+/start → [sure] → /login key → [create Ion] → ready to chat
 ```
 
 ### Using Tools
