@@ -1647,6 +1647,12 @@ def handle_callback_query(update: dict):
             project_id = callback_data.replace("switch_project_", "")
             handle_project_command(f"/project {project_id}", {"message": {"from": {"id": user_id}}}, chat_id)
             
+        # Shortcut switching (via /switch buttons)
+        elif callback_data.startswith("switch_shortcut_"):
+            shortcut_name = callback_data.replace("switch_shortcut_", "")
+            # Reuse the same handler as the text command
+            handle_switch_command(f"/switch {shortcut_name}", {"message": {"from": {"id": user_id}}}, chat_id)
+            
         # Tool management
         elif callback_data.startswith("attach_tool_"):
             tool_name = callback_data.replace("attach_tool_", "")
@@ -3845,7 +3851,7 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
         # Parse the command: /switch <shortcut_name>
         parts = message.strip().split()
 
-        # If no arguments, list all shortcuts
+        # If no arguments, list all shortcuts and include inline buttons to switch
         if len(parts) == 1:
             shortcuts = get_user_shortcuts(user_id)
             if not shortcuts:
@@ -3853,11 +3859,15 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
                 return
 
             response = ""
+            buttons = []
             for name, data in shortcuts.items():
                 agent_name = data.get("agent_name", "Unknown")
                 response += f"`{name}`: {agent_name}\n"
+                # One button per shortcut to switch directly
+                buttons.append([(name, f"switch_shortcut_{name}")])
 
-            send_telegram_message(chat_id, response.rstrip())
+            keyboard = create_inline_keyboard(buttons) if buttons else None
+            send_telegram_message(chat_id, response.rstrip(), keyboard)
             return
 
         if len(parts) != 2:
