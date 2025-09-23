@@ -1112,7 +1112,7 @@ def process_message_async(update: dict):
         if has_voice or has_audio:
             try:
                 # Inform user we're transcribing
-                send_telegram_message(chat_id, "(transcribing audio)")
+                send_telegram_message(chat_id, f"({agent_name} is listening)")
 
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
                 if not bot_token:
@@ -1178,7 +1178,7 @@ def process_message_async(update: dict):
         
         # Notify user that message was received
         if has_photo:
-            send_telegram_message(chat_id, "(processing image)")
+            send_telegram_message(chat_id, f"({agent_name} is looking)")
         elif has_voice or has_audio:
             # Already sent a transcription notice above
             pass
