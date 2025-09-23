@@ -1593,6 +1593,18 @@ def handle_callback_query(update: dict):
             
         elif callback_data == "i_know_what_i'm_doing":
             send_telegram_message(chat_id, "(alright. use /login <api_key> when you're ready)")
+
+        elif callback_data == "i_have_a_key":
+            msg = (
+                "(great. send `/login <api_key>`)\n\n"
+                "i will delete the key message immediately. for safety, use direct messages, not groups.\n\n"
+                "example: /login sk-abc123"
+            )
+            keyboard = create_inline_keyboard([["i sent it", "i_sent_it"]])
+            send_telegram_message(chat_id, msg, keyboard)
+
+        elif callback_data == "i_sent_it":
+            send_telegram_message(chat_id, "(waiting for your /login command)")
             
         elif callback_data == "got_my_key":
             response = "(nice. just do /login and paste your key)\n\nlike: /login sk-whatever\n\ni'll delete the message right away for privacy"
@@ -2125,6 +2137,8 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                         ["show all options"]
                     ])
                 send_telegram_message(chat_id, response, keyboard)
+                # Send compact help card
+                send_compact_help_card(chat_id)
             except:
                 # Fallback if we can't check agents
                 response += "what's next?\n\n"
@@ -2139,6 +2153,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                     ["just explore"]
                 ])
                 send_telegram_message(chat_id, response, keyboard)
+                send_compact_help_card(chat_id)
         except Exception as storage_error:
             print(f"Failed to store credentials for user {user_id}: {storage_error}")
             send_telegram_message(chat_id, "(error: failed to store credentials)")
@@ -2331,7 +2346,8 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             save_user_preferences(user_id, preferences)
 
             # Send success message
-            send_telegram_message(chat_id, f"✅ **{agent.name}** created and selected.\n\nAgent ID: `{agent.id}`\n\nLet me introduce you -- this may take a moment.")
+            send_telegram_message(chat_id, f"✅ **{agent.name}** created and selected.\n\nAgent ID: `{agent.id}`\n\nLet me introduce myself — this may take a moment.")
+            send_compact_help_card(chat_id)
 
             # Create introduction message
             intro_context = f"[User {user_name} just created you using /make-default-agent command via Telegram (chat_id: {chat_id})]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news\n\nYou can mention they can learn more about Letta on Discord (https://discord.com/invite/letta) if relevant."
@@ -2517,10 +2533,12 @@ def handle_start_command(update: dict, chat_id: str):
                 ])
             send_telegram_message(chat_id, response, keyboard)
         else:
-            # New user - provide interactive setup guide
-            response = f"(hey {first_name.lower()}, welcome to letta)\n\nlooks like you're new here. want help getting started?"
+            # New user - provide interactive setup guide with URL + callbacks
+            response = f"(welcome to letta, {first_name.lower()})\n\nconnect your account to start."
             keyboard = create_inline_keyboard([
-                ["sure", "i know what i'm doing"]
+                ({"text": "get api key", "url": "https://app.letta.com"}),
+                ("i have a key", "i_have_a_key"),
+                ("learn more", "learn_more"),
             ])
             send_telegram_message(chat_id, response, keyboard)
 
@@ -4498,27 +4516,51 @@ def create_inline_keyboard(buttons: list) -> dict:
     keyboard = []
     
     for row in buttons:
-        if isinstance(row, list):
-            # Multiple buttons in a row
-            keyboard_row = []
-            for button in row:
-                if isinstance(button, tuple):
-                    text, callback_data = button
-                    keyboard_row.append({"text": text, "callback_data": callback_data})
+        # Normalize to a list of items in a row
+        items = row if isinstance(row, list) else [row]
+        keyboard_row = []
+        for button in items:
+            # Support dict with explicit url or callback_data
+            if isinstance(button, dict):
+                btn = {"text": button.get("text", "button")}
+                if "url" in button:
+                    btn["url"] = button["url"]
+                elif "callback_data" in button:
+                    btn["callback_data"] = button["callback_data"]
                 else:
-                    # Simple text button
-                    keyboard_row.append({"text": button, "callback_data": button.lower().replace(" ", "_")})
-            keyboard.append(keyboard_row)
-        else:
-            # Single button in a row
-            if isinstance(row, tuple):
-                text, callback_data = row
-                keyboard.append([{"text": text, "callback_data": callback_data}])
+                    # Fallback: use text-derived callback
+                    btn["callback_data"] = btn["text"].lower().replace(" ", "_")
+                keyboard_row.append(btn)
+            elif isinstance(button, tuple):
+                text, meta = button
+                if isinstance(meta, dict) and "url" in meta:
+                    keyboard_row.append({"text": text, "url": meta["url"]})
+                else:
+                    callback_data = meta if isinstance(meta, str) else text.lower().replace(" ", "_")
+                    keyboard_row.append({"text": text, "callback_data": callback_data})
             else:
-                # Simple text button
-                keyboard.append([{"text": row, "callback_data": row.lower().replace(" ", "_")}])
+                # Simple text button by default
+                keyboard_row.append({"text": button, "callback_data": str(button).lower().replace(" ", "_")})
+        keyboard.append(keyboard_row)
     
     return {"inline_keyboard": keyboard}
+
+def send_compact_help_card(chat_id: str):
+    """
+    Send a compact help card highlighting common next actions and capabilities.
+    """
+    msg = (
+        "**Quick Tips**\n\n"
+        "You can:\n"
+        "• Chat with your agent\n"
+        "• Send images for analysis\n"
+        "• Send voice notes for transcription\n"
+        "• Switch agents with `/agents`\n"
+        "• Manage tools with `/tool`\n"
+        "• Open the web interface with `/ade`\n"
+        "• Manage shortcuts with `/shortcut`\n"
+    )
+    send_telegram_message(chat_id, msg)
 
 @app.function(image=image, secrets=[modal.Secret.from_name("telegram-bot")])
 @modal.fastapi_endpoint(method="GET")
