@@ -3086,14 +3086,14 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
         elif subcommand == "attach":
             # /tool attach <name>
             if len(parts) < 3:
-                send_telegram_message(chat_id, "❌ Usage: `/tool attach <tool_name>`\n\nExample: `/tool attach calculator`")
+                send_telegram_message(chat_id, "❌ Usage: `/tool attach <tool_name>`\n\nExample: `/tool attach web_search`")
                 return
             tool_name = " ".join(parts[2:])  # Support multi-word tool names
             handle_tool_attach(client, project_id, agent_id, tool_name, chat_id)
         elif subcommand == "detach":
             # /tool detach <name>
             if len(parts) < 3:
-                send_telegram_message(chat_id, "❌ Usage: `/tool detach <tool_name>`\n\nExample: `/tool detach calculator`")
+                send_telegram_message(chat_id, "❌ Usage: `/tool detach <tool_name>`\n\nExample: `/tool detach web_search`")
                 return
             tool_name = " ".join(parts[2:])  # Support multi-word tool names
             handle_tool_detach(client, agent_id, tool_name, chat_id)

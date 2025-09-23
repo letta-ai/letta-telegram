@@ -8,6 +8,13 @@ The Letta Telegram Bot (@letta_ai_bot) lets you chat with your Letta agents dire
 
 Communications with Letta agents using the Telegram bot will modify the agent's state everywhere that Letta agents are available -- for example, you will see the Telegram messages appear in Letta's ADE.
 
+**New Features:**
+- **Memory Management** - View and inspect your agent's memory blocks with `/blocks` and `/block`
+- **Agent Templates** - Quick-start with preconfigured agents using `/template`
+- **Reasoning Control** - Toggle agent thought visibility with `/reasoning enable/disable`
+- **Proactive Notifications** - Allow agents to send you messages with `/telegram-notify`
+- **Enhanced Navigation** - Comprehensive help system and quick reference commands
+
 ## Getting Started
 
 ### Step 1: Find the Bot
@@ -52,9 +59,21 @@ Once you've selected an agent, just send any message to start your conversation.
 
 ## Essential Commands - Complete Reference
 
-### Authentication Commands
+This comprehensive guide covers all available Telegram bot commands, organized by category for easy navigation. Commands marked with ⭐ are essential for getting started.
 
-#### `/start` - Welcome and Setup Guide
+**Quick Navigation:**
+- [Authentication Commands](#authentication-commands-) - Login, logout, status
+- [Agent Management Commands](#agent-management-commands-) - Agents, projects, templates
+- [Tool Management Commands](#tool-management-commands) - Attach/detach tools
+- [Shortcut Commands](#shortcut-commands) - Quick agent switching
+- [Memory Management Commands](#memory-management-commands) - View memory blocks
+- [Notification Management Commands](#notification-management-commands) - Proactive messages
+- [Preference & Settings Commands](#preference--settings-commands) - Reasoning, refresh, preferences
+- [Help Commands](#help-commands) - Get assistance
+
+### Authentication Commands ⭐
+
+#### `/start` ⭐ - Welcome and Setup Guide
 Opens the interactive setup wizard for new and returning users.
 
 **Behavior:**
@@ -86,7 +105,7 @@ looks like you're new here. want help getting started?
 [maybe later]
 ```
 
-#### `/login <api_key>` - Authenticate with Letta
+#### `/login <api_key>` ⭐ - Authenticate with Letta
 Connects your Letta account to the Telegram bot. Your API key is immediately deleted from chat history for security.
 
 **What it does:**
@@ -175,9 +194,9 @@ Please use /login <api_key> to authenticate.
 Get your API key at: https://app.letta.com
 ```
 
-### Agent Management Commands
+### Agent Management Commands ⭐
 
-#### `/agents` - List Available Agents
+#### `/agents` ⭐ - List Available Agents
 Shows all agents in your current project with their IDs.
 
 **Expected Output:**
@@ -227,7 +246,7 @@ Use /agents to see available agents
 Use /agent <agent_id> to select one
 ```
 
-#### `/agent <id>` - Select an Agent
+#### `/agent <id>` ⭐ - Select an Agent
 Switches to a specific agent for your conversation.
 
 **Example Command:**
@@ -382,23 +401,23 @@ Directly attaches a tool without using the interactive menu.
 
 **Example Command:**
 ```
-/tool attach code_interpreter
+/tool attach web_search
 ```
 
 **Expected Output (Success):**
 ```
 (tool attached)
 
-code_interpreter is now available to your agent
+web_search is now available to your agent
 
-execute python code in a sandbox environment for data analysis and computation
+search the internet for current information and recent data
 ```
 
 **Expected Output (Already Attached):**
 ```
 (already attached)
 
-code_interpreter is already available to this agent
+web_search is already available to this agent
 ```
 
 **Expected Output (Not Found):**
@@ -413,14 +432,14 @@ Directly removes a tool without using the interactive menu.
 
 **Example Command:**
 ```
-/tool detach calculator
+/tool detach web_search
 ```
 
 **Expected Output:**
 ```
 (tool detached)
 
-calculator has been removed from your agent
+web_search has been removed from your agent
 ```
 
 ### Shortcut Commands
@@ -511,35 +530,238 @@ Commands:
 /projects - List projects
 /agent - Show/switch agent
 /agents - List agents
+/make-default-agent - Create default agent
+/template - List and create agent templates
 /ade - Get agent web link
 /tool - Manage tools
+/telegram-notify - Enable proactive notifications
 /shortcut - Manage shortcuts
 /switch <name> - Quick switch
-/help - Show this help
+/blocks - List memory blocks
+/block <label> - View memory block
+/reasoning enable|disable - Show/hide reasoning messages
+/clear-preferences - Reset preferences
+/refresh - Update cached agent info
+/help - Show commands
 
-Send any other message to chat with your selected agent.
 ```
 
-## Bot Design Philosophy
+### Memory Management Commands
 
-### Professional Yet Approachable
+#### `/blocks` - List Memory Blocks
+Shows all memory blocks for your current agent with their labels and character usage.
 
-The Letta Telegram Bot provides a balance of professionalism and friendliness:
-- Messages are clear and conversational, never overwhelming
-- Responses feel natural and helpful
-- Button interactions are clean and intuitive
-- Error messages are informative, not harsh
+**Expected Output:**
+```
+**Memory Blocks for Research Assistant**
 
-### Interactive Yet Simple
+📝 **persona** (1,245/2,000 chars)
+Core personality and role definition
 
-**Buttons When Helpful**: Interactive buttons appear for common actions, but you can always type commands directly.
+👤 **human** (891/2,000 chars)
+Information about the human user
 
-**Smart Defaults**: The bot anticipates your needs:
-- Shows relevant agents as buttons after login
-- Offers templates for quick agent creation
-- Provides navigation shortcuts in menus
+🛠️ **tool_use_guidelines** (542/2,000 chars)
+Guidelines for using available tools
 
-**Gentle Guidance**: Instead of overwhelming you with options, the bot guides you step-by-step through setup and usage.
+💭 **communication_guidelines** (423/2,000 chars)
+How to communicate effectively
+
+📋 **procedures** (667/2,000 chars)
+Standard operating procedures
+
+📊 **scratchpad** (234/2,000 chars)
+Temporary storage for ideas and notes
+
+Use `/block <label>` to view a specific block
+```
+
+#### `/block <label>` - View Memory Block
+Displays the contents of a specific memory block.
+
+**Example Command:**
+```
+/block persona
+```
+
+**Expected Output:**
+```
+**Memory Block: persona**
+Description: Core personality and role definition
+
+Content:
+I am a thorough research assistant who helps find, analyze, and synthesize information. I'm curious and detail-oriented, focusing on providing comprehensive answers while remaining engaging and helpful. I adapt my communication style to match the user's needs and preferences.
+```
+
+**Expected Output (Block Not Found):**
+```
+(error: block 'invalid_block' not found - use /blocks to see available blocks)
+```
+
+### Template Management Commands
+
+#### `/template` - List Agent Templates
+Shows available agent templates for quick agent creation.
+
+**Expected Output:**
+```
+**Available Templates**
+
+• **Ion** - adaptive AI with infinite memory that develops theories about you
+• **Research** - thorough research assistant with web search
+• **Personal** - personal assistant for daily tasks
+• **Creative** - creative collaboration partner
+• **Study** - patient learning companion
+
+Use: `/template <name>` or click below
+
+[Ion (recommended)] [Research] [Personal] [Creative] [Study]
+```
+
+#### `/template <name>` - Create Agent from Template
+Creates a new agent using a predefined template.
+
+**Example Command:**
+```
+/template ion
+```
+
+**Expected Output (Success):**
+```
+(Ion is ready - we've asked Ion to greet you, please wait)
+
+Hi! I'm Ion, your new AI assistant. Unlike other AIs, I remember everything from our conversations and develop theories about how you think over time.
+
+Here are some ways to get started:
+• Share a link or article you'd like to discuss
+• Ask me to research something you're curious about
+• Tell me about yourself - interests, work, what excites you
+• Give me a problem to think about with you
+• Or just start talking - I learn from everything we discuss
+
+I'll remember this conversation forever and build on it next time we chat.
+```
+
+#### `/make-default-agent` - Create Default Agent
+Creates a simple Ion agent when you have no agents configured.
+
+**Expected Output:**
+```
+(creating agent Ion)
+(Ion is ready)
+
+(**Ion** says)
+
+Hello! I'm Ion, working with you now. I'm a stateful agent with persistent memory that adapts to your communication style naturally.
+
+What would you like to work on together?
+```
+
+### Notification Management Commands
+
+#### `/telegram-notify` - Manage Proactive Notifications
+Controls whether your agent can send proactive notifications via Telegram.
+
+**Usage Options:**
+- `/telegram-notify` or `/telegram-notify status` - Check current status
+- `/telegram-notify enable` - Allow proactive notifications
+- `/telegram-notify disable` - Disable proactive notifications
+
+**Expected Output (Status):**
+```
+🔔 **Telegram Notifications**
+
+Agent: Research Assistant
+Status: Enabled ✅
+
+Your agent can send proactive notifications when:
+• Important events occur
+• Scheduled reminders trigger
+• Research tasks complete
+
+Use `/telegram-notify disable` to turn off
+```
+
+**Expected Output (Enable):**
+```
+✅ **Notifications Enabled**
+
+Research Assistant can now send proactive Telegram messages.
+The 'send_telegram_message' tool has been attached to your agent.
+```
+
+**Expected Output (Disable):**
+```
+🔕 **Notifications Disabled**
+
+Research Assistant will no longer send proactive Telegram messages.
+The 'send_telegram_message' tool has been removed from your agent.
+```
+
+### Preference & Settings Commands
+
+#### `/reasoning enable|disable` - Control Reasoning Messages
+Controls whether you see your agent's internal reasoning/thought processes.
+
+**Example Commands:**
+```
+/reasoning enable
+/reasoning disable
+```
+
+**Expected Output (Enable):**
+```
+✅ Reasoning messages enabled
+```
+
+**Expected Output (Disable):**
+```
+❌ Reasoning messages disabled
+```
+
+**What are reasoning messages?**
+When enabled, you'll see messages like:
+```
+(**Research Assistant** thought)
+
+> I need to search for recent information about this topic since my knowledge might be outdated. Let me use the web search tool to find current data.
+```
+
+When disabled, you'll only see the agent's final responses, not their internal thinking process.
+
+#### `/refresh` - Update Cached Agent Info
+Updates the bot's cached information about your current agent (name, etc).
+
+**Expected Output:**
+```
+✅ **Agent Info Refreshed**
+
+Updated cached info for: Advanced Research Assistant
+(was: Research Assistant)
+
+Agent name and details are now current.
+```
+
+**Expected Output (No Changes):**
+```
+ℹ️ **Agent Info Current**
+
+Research Assistant - no updates needed
+Cached information matches current agent state.
+```
+
+#### `/clear-preferences` - Reset User Preferences
+Clears all your stored preferences and settings (debug command).
+
+**Expected Output:**
+```
+(preferences cleared)
+```
+
+**Expected Output (No Preferences):**
+```
+(no preferences found)
+```
 
 ## Understanding Your Agents
 
@@ -666,7 +888,6 @@ Agent: Let me search for current weather information... [searches web]
 **Attach New Tools**:
 ```
 /tool attach web_search
-/tool attach calculator
 ```
 
 ### Navigation and Pagination
@@ -708,38 +929,14 @@ Organize your agents by project:
 /project project-id-here
 ```
 
-## Tips for Better Conversations
-
-### Be Specific
-Your agent performs better with clear, specific requests:
-- ❌ "Help me with that thing we discussed"
-- ✅ "Help me refine the marketing strategy we discussed last Tuesday"
-
-### Use Context
-Reference previous conversations naturally:
-- "Remember when we talked about the budget?"
-- "Let's continue our discussion about the project timeline"
-
-### Manage Long Conversations
-For complex topics:
-- Break down into smaller questions
-- Ask for summaries periodically
-- Use "Let's focus on..." to guide the conversation
-
-### Leverage Memory
-Your agent remembers everything:
-- Personal preferences you've shared
-- Project details and decisions
-- Previous solutions and approaches
-
 ## Privacy and Security
 
 ### Your Data Is Protected
 
-- **Encrypted Storage**: Your API key is encrypted with a unique key
+- **API Key Encryption**: Your API key is encrypted on the bot server with a unique key
 - **Isolated Access**: You can only see your own agents and data
 - **Secure Communication**: All messages are transmitted securely
-- **No Sharing**: Your conversations are private to your account
+- **Letta Cloud Storage**: Your conversations and agent data are stored on Letta Cloud and may be visible there
 
 ### Best Practices
 
@@ -1035,6 +1232,7 @@ Essential Commands:
 /login <key>        - Connect account
 /agents             - List agents
 /agent <id>         - Select agent
+/template <name>    - Create from template
 /help               - Command list
 
 Quick Actions:
@@ -1047,6 +1245,14 @@ Management:
 /projects           - List projects
 /tool               - Manage tools
 /shortcut           - Manage shortcuts
+/blocks             - View memory blocks
+/block <label>      - View specific block
+
+Settings:
+/reasoning enable|disable - Toggle thoughts
+/telegram-notify enable   - Proactive messages
+/refresh                  - Update agent info
+/clear-preferences        - Reset settings
 ```
 
 Start chatting with your intelligent, memory-equipped AI agents today at [t.me/letta_ai_bot](https://t.me/letta_ai_bot)!
