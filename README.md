@@ -4,21 +4,21 @@ A serverless Telegram bot that exposes your Letta agents to Telegram, enabling i
 
 From an agent running on Telegram for a while:
 
-> 📌 Letta Telegram Plugin
+> Letta Telegram Plugin
 >
 > Connect your Letta agents to Telegram for persistent, multi-platform conversations. This plugin enables seamless interaction with your stateful agents through Telegram's messaging interface.
 >
-> ✏ What is this?
+> What is this?
 >
 > The Letta Telegram plugin bridges Letta's memory-native AI agents with Telegram's messaging platform. Your agents maintain full context and memory across conversations, whether you're chatting through the desktop app, web interface, or now Telegram.
 >
 > Perfect for:
-> ⦁ On-the-go conversations with your personal AI assistant
-> ⦁ Sharing agent access with team members via Telegram groups
-> ⦁ Building conversational AI experiences that persist across platforms
-> ⦁ Demonstrating Letta's stateful capabilities in a familiar messaging environment
+> - On-the-go conversations with your personal AI assistant
+> - Sharing agent access with team members via Telegram groups
+> - Building conversational AI experiences that persist across platforms
+> - Demonstrating Letta's stateful capabilities in a familiar messaging environment
 
-## 🚀 What This Does
+## What This Does
 
 This bot creates a bridge between Telegram and [Letta](https://letta.com) (formerly MemGPT), allowing you to:
 - **Multi-tenant authentication** - Each user brings their own Letta API key
@@ -30,7 +30,7 @@ This bot creates a bridge between Telegram and [Letta](https://letta.com) (forme
 - Deploy scalably on Modal's serverless infrastructure
 - Handle both user-initiated and agent-initiated messages
 
-## ⚡ Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -122,7 +122,7 @@ curl -X POST "https://api.telegram.org/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123e
   -d "secret_token=MySecureRandomString123"
 ```
 
-## 🔐 User Authentication
+## User Authentication
 
 ### For Bot Users
 
@@ -151,6 +151,11 @@ Once the bot is deployed, users interact with it through these commands:
 /shortcut                # List your shortcuts
 /switch herald           # Quick switch using shortcut
 
+# Memory & Preferences
+/blocks                  # View agent's memory blocks
+/block persona           # View specific memory block
+/reasoning disable       # Hide agent reasoning messages
+
 # Then just chat normally!
 Hello, how are you?      # Regular conversation with your selected agent
 ```
@@ -172,7 +177,7 @@ Hello, how are you?      # Regular conversation with your selected agent
 
 **Alternative**: Users can send any message → Gets "Authentication Required" prompt with `/start` suggestion
 
-## 🔧 Configuration Reference
+## Configuration Reference
 
 ### Modal Secrets Structure
 
@@ -180,7 +185,7 @@ Your bot credentials are stored as a Modal secret:
 
 **`telegram-bot` secret:**
 - `TELEGRAM_BOT_TOKEN`: Bot token from [@BotFather](https://t.me/botfather)
-- `TELEGRAM_WEBHOOK_SECRET`: (Required for security) Security token for webhook validation - must match the `secret_token` used when registering webhook
+- `TELEGRAM_WEBHOOK_SECRET`: (Optional but recommended) Security token for webhook validation - must match the `secret_token` used when registering webhook
 - `ENCRYPTION_MASTER_KEY`: Master key for encrypting user API keys (32+ characters)
 
 **User credentials are stored separately and encrypted per-user in Modal Volumes.**
@@ -210,7 +215,7 @@ User Message → Telegram → Webhook → Authentication Check → User's Letta 
 5. Message sent to user's specific Letta agent with user context
 6. Agent response streamed back to Telegram in real-time
 
-## 🛠️ Development & Testing
+## Development & Testing
 
 ### Local Development
 
@@ -224,9 +229,8 @@ This creates temporary endpoints you can use for testing.
 
 ### Available Endpoints
 
-- `POST /telegram_webhook` - Receives Telegram messages  
+- `POST /telegram_webhook` - Receives Telegram messages
 - `GET /health_check` - Service health status
-- `send_proactive_message()` - Function for agent-initiated messages
 
 ### Key Features
 
@@ -237,7 +241,7 @@ This creates temporary endpoints you can use for testing.
 - **Tool Visualization**: Shows when agents use tools like web search
 - **Long Message Support**: Handles messages up to Telegram's 4,096 character limit
 
-## 🤖 Agent Management
+## Agent Management
 
 ### Commands
 
@@ -260,18 +264,30 @@ This creates temporary endpoints you can use for testing.
 - **`/agent`** - Show current agent information
 - **`/agent <id>`** - Switch to a specific agent
 - **`/agents`** - List all available agents
+- **`/template ion`** - Create Ion agent (adaptive AI with advanced memory)
+- **`/make-default-agent`** - Create a simple default agent
 - **`/ade`** - Get web interface link for current agent
+- **`/refresh`** - Update cached agent name if changed externally
+
+**Memory Inspection:**
+- **`/blocks`** - List all memory blocks for current agent
+- **`/block <label>`** - View specific memory block content
 
 **Tool Management:**
 - **`/tool`** or **`/tool list`** - List attached and available tools
 - **`/tool attach <name>`** - Attach a tool to your agent
 - **`/tool detach <name>`** - Detach a tool from your agent
+- **`/telegram-notify`** - Attach the notify_via_telegram tool to current agent (see note below)
 
 **Shortcuts:**
 - **`/shortcut`** - List your saved shortcuts
 - **`/shortcut <name> <agent_id>`** - Create shortcut for quick switching
 - **`/shortcut delete <name>`** - Delete a shortcut
-- **`/switch <name>`** - Quickly switch to agent using shortcut
+- **`/switch <name>`** - Quickly switch to agent using shortcut (shows buttons for existing shortcuts)
+
+**Preferences:**
+- **`/reasoning enable|disable`** - Toggle agent reasoning message visibility
+- **`/clear-preferences`** - Reset all user preferences (debug command)
 
 ### How It Works
 
@@ -282,21 +298,24 @@ This creates temporary endpoints you can use for testing.
 5. **Automatic Discovery**: The bot lists all agents from the authenticated user's Letta account
 6. **Validation**: Agent IDs are validated against the user's Letta account before saving
 7. **Security**: All user credentials are encrypted with per-user unique encryption keys
+8. **Agent Templates**: Currently only Ion template is available - a sophisticated agent with advanced memory
+9. **Interactive Shortcuts**: `/switch` command shows inline buttons for existing shortcuts
+10. **Memory Inspection**: View agent memory blocks to understand internal state
+11. **Reasoning Visibility**: Toggle agent thinking messages with `/reasoning` command
 
 ### Storage Structure
 
 ```
 /data/
 ├── users/
-│   ├── {telegram_user_id_1}/
-│   │   └── credentials.json    # Encrypted API key + metadata
-│   ├── {telegram_user_id_2}/
-│   │   └── credentials.json
+│   └── {telegram_user_id}/
+│       ├── credentials.json    # Encrypted API key + metadata
+│       ├── shortcuts.json      # User's agent shortcuts
+│       └── preferences.json    # User preferences (reasoning visibility, etc.)
 └── chats/
-    ├── {chat_id_1}/
-    │   └── agent.json         # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
-    ├── {chat_id_2}/
-    │   └── agent.json
+    └── {chat_id}/
+        ├── agent.json          # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
+        └── project.json        # {"project_id": "...", "project_name": "...", "project_slug": "..."}
 ```
 
 - **User credentials** are stored per Telegram user ID with encryption
@@ -311,14 +330,67 @@ This creates temporary endpoints you can use for testing.
 - **Context Preservation**: Includes user info in agent context
 - **Polling System**: Waits for agent processing completion (up to 4 minutes)
 
-## 📚 Additional Resources
+## Advanced Features
+
+### Memory Block Inspection
+
+View and inspect your agent's memory blocks to understand their internal state:
+
+```bash
+# List all memory blocks
+/blocks
+
+# View specific block content
+/block persona
+/block human
+/block working_theories  # For Ion agents
+```
+
+This is especially useful for understanding how Ion agents develop theories about you and track conversation context.
+
+### Reasoning Message Control
+
+Toggle visibility of agent reasoning/thinking messages:
+
+```bash
+/reasoning enable   # Show agent's internal thoughts
+/reasoning disable  # Hide reasoning messages
+```
+
+Reasoning messages show the agent's internal monologue before they respond, giving insight into their thought process.
+
+### Ion Agent Template
+
+Ion is the only available agent template - a sophisticated AI companion with advanced memory architecture:
+
+- **Adaptive Memory**: Develops theories about how you think and communicate
+- **Persistent Context**: Remembers everything from previous conversations
+- **Dynamic Learning**: Updates memory blocks based on interactions
+- **Advanced Memory Blocks**: Includes `working_theories`, `notes_to_self`, and `active_questions`
+
+Create Ion with: `/template ion`
+
+### Proactive Notifications with telegram-notify
+
+The `/telegram-notify` command attaches a `notify_via_telegram` tool to your agent, allowing it to send you messages. However, note:
+
+- The agent must decide when to use this tool based on your instructions
+- It won't automatically trigger in the background without external prompting
+- You need to tell your agent when and why to notify you (e.g., "notify me when X happens")
+
+For scheduled or event-driven notifications, consider using [Letta's Zapier integration](https://zapier.com/apps/letta/integrations) to:
+- Schedule regular messages to your agent
+- Trigger agent responses based on external events
+- Create automated workflows that prompt your agent to check things and notify you
+
+## Additional Resources
 
 For detailed Letta usage and API documentation, visit:
 - [Letta Documentation](https://docs.letta.com) - Official documentation
 - [Letta API Reference](https://docs.letta.com/api-reference/overview) - API endpoints and examples
 - [Letta GitHub](https://github.com/letta-ai/letta) - Source code and examples
 
-## 🔍 Troubleshooting
+## Troubleshooting
 
 **Bot not responding?**
 - Check Modal deployment logs: `modal logs`
@@ -343,7 +415,7 @@ For detailed Letta usage and API documentation, visit:
 - Check that only `telegram-bot` secret exists (no `letta-api` secret needed)
 - Verify all dependencies in requirements.txt are available
 
-## 📝 Project Structure
+## Project Structure
 
 ```
 letta-telegram/
@@ -352,10 +424,10 @@ letta-telegram/
 └── README.md        # This file
 ```
 
-## 🤝 Contributing
+## Contributing
 
 This project is part of the Letta AI ecosystem. For questions or contributions, please visit the [Letta-Telegram GitHub repository](https://github.com/letta-ai/letta-telegram).
 
-## 📜 License
+## License
 
 This project follows the same license as the main Letta project. See the [Letta repository](https://github.com/letta-ai/letta) for license details.
