@@ -76,6 +76,15 @@ modal secret create telegram-bot \
 modal secret create openai \
   OPENAI_API_KEY=$OPENAI_API_KEY
 
+# Optional: Twilio SMS/WhatsApp credentials
+modal secret create twilio \
+  TWILIO_ACCOUNT_SID=$TWILIO_ACCOUNT_SID \
+  TWILIO_AUTH_TOKEN=$TWILIO_AUTH_TOKEN \
+  TWILIO_MESSAGING_SERVICE_SID=$TWILIO_MESSAGING_SERVICE_SID \
+  TWILIO_SMS_FROM=$TWILIO_SMS_FROM \
+  TWILIO_WHATSAPP_FROM=$TWILIO_WHATSAPP_FROM \
+  TWILIO_VALIDATE_SIGNATURE=true
+
 # Or if you already have them in environment variables:
 modal secret create telegram-bot \
   TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
@@ -120,6 +129,22 @@ curl -X POST "https://api.telegram.org/bot{YOUR_BOT_TOKEN}/setWebhook" \
 curl -X POST "https://api.telegram.org/bot123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11/setWebhook" \
   -d "url=https://your-app--telegram-webhook.modal.run" \
   -d "secret_token=MySecureRandomString123"
+
+### 6. (Optional) Configure Twilio Webhook
+
+Point your Twilio Messaging webhook(s) to your deployed Twilio endpoint:
+
+- SMS/WhatsApp webhook: `POST https://your-app--twilio-webhook.modal.run`
+
+In Twilio Console:
+- For phone numbers: set the Messaging “A MESSAGE COMES IN” webhook to the URL above
+- For WhatsApp: configure the Sandbox or WhatsApp-enabled number with the same webhook
+
+Signature verification is supported when `TWILIO_VALIDATE_SIGNATURE=true` and `TWILIO_AUTH_TOKEN` are set.
+
+RCS senders
+- Recommended: Use a Messaging Service and attach your RCS sender; set `TWILIO_MESSAGING_SERVICE_SID`.
+- Fallback: Set `TWILIO_RCS_FROM=rcs:your_rcs_sender` to send without a Messaging Service (only needed if you cannot use a Messaging Service). The app will also reuse the inbound `To` as the `From` when replying to incoming RCS, ensuring channel match.
 ```
 
 ## User Authentication
@@ -160,12 +185,24 @@ Once the bot is deployed, users interact with it through these commands:
 Hello, how are you?      # Regular conversation with your selected agent
 ```
 
+For Twilio (SMS/WhatsApp), use the same commands in plain text:
+
+```
+/login <api_key>
+/status
+/agents
+/agent <id>
+/logout
+```
+Then chat normally by texting your message.
+
 ### Security Features
 
 - **Per-User Encryption**: Each user's API key is encrypted with a unique key derived from their Telegram user ID
 - **Automatic Message Deletion**: `/login` messages containing API keys are immediately deleted from chat history
 - **Credential Isolation**: Users can only access their own Letta agents and data
 - **Persistent Storage**: Credentials are securely stored and persist across bot restarts
+- **Twilio Signature Validation**: Optional verification of incoming requests when enabled
 
 ### User Flow
 
@@ -215,6 +252,12 @@ User Message → Telegram → Webhook → Authentication Check → User's Letta 
 5. Message sent to user's specific Letta agent with user context
 6. Agent response streamed back to Telegram in real-time
 
+For Twilio (SMS/WhatsApp):
+
+```
+User Message → Twilio → Webhook → Authentication Check → User's Letta Agent → Response → Twilio (SMS/WhatsApp)
+```
+
 ## Development & Testing
 
 ### Local Development
@@ -230,6 +273,8 @@ This creates temporary endpoints you can use for testing.
 ### Available Endpoints
 
 - `POST /telegram_webhook` - Receives Telegram messages
+- `POST /twilio_webhook` - Receives Twilio SMS/WhatsApp messages
+  - Also supports RCS when using a Messaging Service with an attached RCS sender
 - `GET /health_check` - Service health status
 
 ### Key Features
@@ -240,6 +285,8 @@ This creates temporary endpoints you can use for testing.
 - **Message Formatting**: Automatic conversion to Telegram MarkdownV2 format
 - **Tool Visualization**: Shows when agents use tools like web search
 - **Long Message Support**: Handles messages up to Telegram's 4,096 character limit
+- **SMS & WhatsApp**: Optional Twilio integration for SMS and WhatsApp
+  - RCS supported via Twilio Messaging Service (or `TWILIO_RCS_FROM`)
 
 ## Agent Management
 
@@ -422,6 +469,8 @@ letta-telegram/
 ├── main.py           # Main bot application with webhook handlers
 ├── requirements.txt  # Python dependencies
 └── README.md        # This file
+
+Twilio support is implemented in `main.py` with the `POST /twilio_webhook` endpoint and shares the same storage and Letta logic.
 ```
 
 ## Contributing

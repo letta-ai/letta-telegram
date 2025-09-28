@@ -5,6 +5,7 @@ from typing import Dict, Any
 from datetime import datetime
 import modal
 from fastapi import Request, HTTPException
+from fastapi import Response as FastAPIResponse
 from pydantic import BaseModel, Field
 
 
@@ -21,6 +22,8 @@ image = (
         "letta_client",
         "cryptography>=3.4.8",
         "openai>=1.40.0",
+        "python-multipart>=0.0.9",
+        "twilio>=9.0.0",
     ])
 )
 
@@ -29,7 +32,7 @@ app = modal.App("letta-telegram-bot", image=image)
 # The time a container will remain warm after receiving a message.
 # A higher number here means that there will generally be lower latency for
 # messages sent in the same window.
-SCALEDOWN_WINDOW=300
+SCALEDOWN_WINDOW=30
 
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
@@ -67,6 +70,100 @@ def get_user_encryption_key(user_id: str) -> bytes:
 def get_webhook_secret():
     """Get the Telegram webhook secret from environment variables"""
     return os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+
+# ------------------ Twilio helpers ------------------
+def get_twilio_config() -> dict:
+    """Load Twilio configuration from environment variables."""
+    return {
+        "account_sid": os.environ.get("TWILIO_ACCOUNT_SID"),
+        "auth_token": os.environ.get("TWILIO_AUTH_TOKEN"),
+        "messaging_service_sid": os.environ.get("TWILIO_MESSAGING_SERVICE_SID"),
+        "sms_from": os.environ.get("TWILIO_SMS_FROM"),
+        "wa_from": os.environ.get("TWILIO_WHATSAPP_FROM"),
+        "validate_sig": str(os.environ.get("TWILIO_VALIDATE_SIGNATURE", "")).lower() in ("1", "true", "yes"),
+    }
+
+def is_whatsapp_sender(sender: str) -> bool:
+    return sender.lower().startswith("whatsapp:") if sender else False
+
+def send_twilio_message(to: str, body: str, from_hint: str | None = None) -> dict:
+    """
+    Send a message via Twilio (SMS or WhatsApp).
+
+    Chooses Messaging Service SID if configured; otherwise falls back to
+    per-channel From numbers (SMS/WhatsApp).
+    """
+    import requests
+
+    cfg = get_twilio_config()
+    account_sid = cfg["account_sid"]
+    auth_token = cfg["auth_token"]
+    if not account_sid or not auth_token:
+        raise RuntimeError("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN")
+
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+    data = {"To": to, "Body": body}
+
+    # Prefer messaging service if set
+    if cfg["messaging_service_sid"]:
+        print(f"[Twilio] Sending via MessagingServiceSid to={to}")
+        data["MessagingServiceSid"] = cfg["messaging_service_sid"]
+    else:
+        # Fallback to explicit From.
+        # Prefer provided from_hint (inbound To) to guarantee channel match.
+        if from_hint:
+            data["From"] = from_hint
+            print(f"[Twilio] Sending with provided From hint from={from_hint} to={to}")
+        else:
+            # Detect channel from 'to' and choose env-specific From
+            if is_whatsapp_sender(to):
+                wa_from = cfg["wa_from"]
+                if not wa_from:
+                    raise RuntimeError("Missing TWILIO_WHATSAPP_FROM for WhatsApp messages")
+                print(f"[Twilio] Sending WhatsApp from={wa_from} to={to}")
+                data["From"] = wa_from
+            elif to.lower().startswith("rcs:"):
+                # For RCS, require explicit From configuration
+                rcs_from = os.environ.get("TWILIO_RCS_FROM")
+                if not rcs_from:
+                    raise RuntimeError("Missing TWILIO_RCS_FROM for RCS messages; or configure a Messaging Service")
+                print(f"[Twilio] Sending RCS from={rcs_from} to={to}")
+                data["From"] = rcs_from
+            else:
+                sms_from = cfg["sms_from"]
+                if not sms_from:
+                    raise RuntimeError("Missing TWILIO_SMS_FROM for SMS messages; or configure a Messaging Service")
+                print(f"[Twilio] Sending SMS from={sms_from} to={to}")
+                data["From"] = sms_from
+
+    resp = requests.post(url, data=data, auth=(account_sid, auth_token), timeout=15)
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"status_code": resp.status_code, "text": resp.text[:200]}
+    if resp.status_code >= 300:
+        print(f"[Twilio] Send failed status={resp.status_code} payload={payload}")
+        raise RuntimeError(f"Twilio send failed: {resp.status_code} - {payload}")
+    else:
+        print(f"[Twilio] Sent message status={resp.status_code} sid={payload.get('sid')}")
+    return payload
+
+def validate_twilio_signature(request: Request, form_dict: dict) -> bool:
+    """Optionally validate Twilio signature using X-Twilio-Signature header."""
+    cfg = get_twilio_config()
+    if not cfg["validate_sig"]:
+        return True
+    try:
+        from twilio.request_validator import RequestValidator
+        validator = RequestValidator(cfg["auth_token"])
+        signature = request.headers.get("X-Twilio-Signature", "")
+        url = str(request.url)
+        valid = validator.validate(url, form_dict, signature)
+        print(f"[Twilio] Signature validation enabled: valid={valid}")
+        return valid
+    except Exception as e:
+        print(f"Twilio signature validation error: {e}")
+        return False
 
 def encrypt_api_key(user_id: str, api_key: str) -> str:
     """
@@ -4517,6 +4614,260 @@ def send_compact_help_card(chat_id: str):
         "• Manage shortcuts with `/shortcut`\n"
     )
     send_telegram_message(chat_id, msg)
+
+# ------------------ Twilio: SMS & WhatsApp endpoints ------------------
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("telegram-bot"),  # still needed for shared encryption key fallback
+        modal.Secret.from_name("twilio"),
+    ],
+    volumes={"/data": volume},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
+@modal.fastapi_endpoint(method="POST")
+async def twilio_webhook(request: Request):
+    """
+    Twilio webhook for inbound SMS/WhatsApp. Quick ACK, with background processing.
+    """
+    # Parse form payload
+    form = await request.form()
+    data = {k: v for k, v in form.items()}
+
+    # Correlation id for logs
+    try:
+        import uuid
+        corr_id = uuid.uuid4().hex[:8]
+    except Exception:
+        corr_id = "unknown"
+
+    # Optional signature validation
+    if not validate_twilio_signature(request, data):
+        print(f"[Twilio][{corr_id}] Invalid signature. Headers: X-Twilio-Signature={request.headers.get('X-Twilio-Signature','')}")
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid Twilio signature")
+
+    from_num = data.get("From", "")
+    to_num = data.get("To", "")
+    body = (data.get("Body") or "").strip()
+
+    print(f"[Twilio][{corr_id}] Inbound message From={from_num} To={to_num} BodyLen={len(body)} NumMedia={data.get('NumMedia','0')} BodySample={body[:120]}")
+
+    # Identify chat and user (separate per-sender to isolate credentials)
+    chat_id = f"twilio:{from_num}:{to_num}"
+    user_id = f"twilio:{from_num}"
+
+    # Basic command handling
+    try:
+        # Help
+        if body.lower().startswith("/help"):
+            print(f"[Twilio][{corr_id}] Command: /help")
+            help_msg = (
+                "Letta SMS/WhatsApp\n\n"
+                "Commands:\n"
+                "/login <api_key> – Authenticate\n"
+                "/status – Check status\n"
+                "/agents – List your agents\n"
+                "/agent <id> – Select agent\n"
+                "/logout – Remove credentials\n\n"
+                "Then send messages normally to chat with your agent."
+            )
+            send_twilio_message(from_num, help_msg, from_hint=to_num)
+            # Return an empty TwiML to avoid duplicate echo
+            print(f"[Twilio][{corr_id}] Sent help message")
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Login
+        if body.lower().startswith("/login"):
+            print(f"[Twilio][{corr_id}] Command: /login")
+            parts = body.split()
+            if len(parts) < 2:
+                print(f"[Twilio][{corr_id}] /login missing api key")
+                send_twilio_message(from_num, "Usage: /login <api_key>", from_hint=to_num)
+                return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+            api_key = parts[1]
+            api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+
+            # Validate key
+            ok, msg, default_proj = validate_letta_api_key(api_key, api_url)
+            if not ok:
+                print(f"[Twilio][{corr_id}] Login failed: {msg}")
+                send_twilio_message(from_num, f"Login failed: {msg}", from_hint=to_num)
+                return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+            store_user_credentials(user_id, api_key, api_url)
+
+            # Optionally set default project if present
+            if default_proj and default_proj[0]:
+                save_chat_project(chat_id, default_proj[0], default_proj[1], default_proj[2])
+
+            print(f"[Twilio][{corr_id}] Login success; stored credentials for {user_id}")
+            send_twilio_message(from_num, "Authenticated successfully. Use /agents to list agents, then /agent <id> to select.", from_hint=to_num)
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Logout
+        if body.lower().startswith("/logout"):
+            print(f"[Twilio][{corr_id}] Command: /logout")
+            delete_user_credentials(user_id)
+            send_twilio_message(from_num, "Logged out and credentials removed.", from_hint=to_num)
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Status
+        if body.lower().startswith("/status"):
+            print(f"[Twilio][{corr_id}] Command: /status")
+            creds = get_user_credentials(user_id)
+            if not creds:
+                send_twilio_message(from_num, "Not authenticated. Use /login <api_key>.", from_hint=to_num)
+            else:
+                agent_info = get_chat_agent_info(chat_id)
+                agent_line = f"Agent: {agent_info['agent_name']} ({agent_info['agent_id']})" if agent_info else "Agent: not selected"
+                send_twilio_message(from_num, f"Status: authenticated\n{agent_line}", from_hint=to_num)
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Agents listing
+        if body.lower().startswith("/agents"):
+            print(f"[Twilio][{corr_id}] Command: /agents")
+            creds = get_user_credentials(user_id)
+            if not creds:
+                send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+                return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+            client = get_letta_client(creds["api_key"], creds["api_url"], timeout=30.0)
+            try:
+                agents = client.agents.list()
+            except Exception as e:
+                print(f"[Twilio][{corr_id}] Error listing agents: {e}")
+                send_twilio_message(from_num, f"Error fetching agents: {e}", from_hint=to_num)
+                return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+            if not agents:
+                send_twilio_message(from_num, "No agents found. Create one in Letta, then try again.")
+            else:
+                lines = ["Your agents:"]
+                for a in agents[:20]:
+                    # client library returns SDK objects; access conservatively
+                    aid = getattr(a, 'id', None) or (a.get('id') if isinstance(a, dict) else None)
+                    aname = getattr(a, 'name', None) or (a.get('name') if isinstance(a, dict) else None)
+                    lines.append(f"{aid} – {aname}")
+                send_twilio_message(from_num, "\n".join(lines), from_hint=to_num)
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Select agent
+        if body.lower().startswith("/agent "):
+            print(f"[Twilio][{corr_id}] Command: /agent <id>")
+            creds = get_user_credentials(user_id)
+            if not creds:
+                send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+                return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+            new_id = body.split(maxsplit=1)[1].strip()
+            try:
+                client = get_letta_client(creds["api_key"], creds["api_url"], timeout=30.0)
+                agent = client.agents.retrieve(agent_id=new_id)
+                save_chat_agent(chat_id, agent.id, agent.name)
+                send_twilio_message(from_num, f"Selected agent: {agent.name}", from_hint=to_num)
+            except Exception as e:
+                print(f"[Twilio][{corr_id}] Error selecting agent: {e}")
+                send_twilio_message(from_num, f"Failed to select agent: {e}", from_hint=to_num)
+            return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+        # Non-command text → background processing
+        # Acknowledge quickly (no user-visible echo)
+        print(f"[Twilio][{corr_id}] Spawning background processor for chat_id={chat_id} user_id={user_id}")
+        process_twilio_message_async.spawn({
+            "From": from_num,
+            "To": to_num,
+            "Body": body,
+            "NumMedia": data.get("NumMedia", "0"),
+            "corr_id": corr_id,
+        })
+        return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+    except Exception as e:
+        print(f"[Twilio][{corr_id}] Error in Twilio webhook: {e}")
+        # Don't error to Twilio; just ack
+        return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("telegram-bot"),
+        modal.Secret.from_name("twilio"),
+        # Optional OpenAI for future media handling (not used now)
+        # modal.Secret.from_name("openai"),
+    ],
+    volumes={"/data": volume},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
+def process_twilio_message_async(payload: dict):
+    """
+    Background processing for Twilio messages using Letta streaming.
+    Sends assistant messages back via Twilio.
+    """
+    try:
+        corr_id = payload.get("corr_id", "-")
+        from_num = payload.get("From", "")
+        to_num = payload.get("To", "")
+        body = (payload.get("Body") or "").strip()
+        chat_id = f"twilio:{from_num}:{to_num}"
+        user_id = f"twilio:{from_num}"
+
+        print(f"[Twilio][{corr_id}] Background start chat_id={chat_id} user_id={user_id} body_len={len(body)}")
+
+        # User must be authenticated
+        credentials = get_user_credentials(user_id)
+        if not credentials:
+            print(f"[Twilio][{corr_id}] No credentials for user; prompting login")
+            send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+            return
+
+        # Agent must be selected
+        agent_info = get_chat_agent_info(chat_id)
+        if not agent_info:
+            print(f"[Twilio][{corr_id}] No agent configured for chat; prompting selection")
+            send_twilio_message(from_num, "No agent selected. Use /agents then /agent <id> to choose.", from_hint=to_num)
+            return
+
+        agent_id = agent_info["agent_id"]
+        agent_name = agent_info.get("agent_name", "Agent")
+
+        # Prepare content (text-only for now)
+        context_message = (
+            f"[Message from {'WhatsApp' if is_whatsapp_sender(from_num) else 'SMS'} user {from_num}]\n\n"
+            "IMPORTANT: Please respond using the send_message tool.\n\n"
+            f"{body if body else '(no text)'}"
+        )
+        content_parts = [{"type": "text", "text": context_message}]
+
+        # Initialize client
+        client = get_letta_client(credentials["api_key"], credentials["api_url"], timeout=60.0)
+
+        # Stream responses and forward assistant messages
+        response_stream = client.agents.messages.create_stream(
+            agent_id=agent_id,
+            messages=[{"role": "user", "content": content_parts}],
+            include_pings=True,
+            request_options={'timeout_in_seconds': 60}
+        )
+
+        print(f"[Twilio][{corr_id}] Streaming started for agent_id={agent_id}")
+        for event in response_stream:
+            try:
+                if hasattr(event, 'message_type') and event.message_type == "assistant_message":
+                    content = getattr(event, 'content', '')
+                    if content and content.strip():
+                        print(f"[Twilio][{corr_id}] Forwarding assistant message len={len(content)}")
+                        # For SMS/WhatsApp/RCS, send plain text; Twilio handles segmentation
+                        send_twilio_message(from_num, f"{agent_name}:\n\n{content}", from_hint=to_num)
+            except Exception as e:
+                print(f"[Twilio][{corr_id}] Error handling stream event: {e}")
+                continue
+
+    except Exception as e:
+        print(f"[Twilio][{corr_id}] Error in Twilio background processing: {e}")
+        try:
+            if payload.get("From"):
+                send_twilio_message(payload["From"], f"Error: {e}", from_hint=payload.get("To"))
+        except Exception:
+            pass
 
 @app.function(image=image, secrets=[modal.Secret.from_name("telegram-bot")])
 @modal.fastapi_endpoint(method="GET")
