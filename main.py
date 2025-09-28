@@ -1206,6 +1206,8 @@ def process_message_async(update: dict):
                 message_text = f"[Image processing failed: {str(e)}]\n{message_text}"
         
         # Process audio if present (voice note or audio file)
+        transcript_text = None
+        audio_error = None
         if has_voice or has_audio:
             try:
                 # Inform user we're transcribing
@@ -1237,28 +1239,25 @@ def process_message_async(update: dict):
                     except Exception:
                         pass
 
-                # Add the transcript into the content parts
-                transcript_prefix = "Transcribed voice message" if has_voice else "Transcribed audio file"
-                transcript_block = f"[{transcript_prefix}]\n\n{transcript_text.strip()}"
-                content_parts.append({
-                    "type": "text",
-                    "text": transcript_block,
-                })
-
                 # If no caption or text, set a default description
                 if not message_text:
                     message_text = "User sent an audio message."
 
             except Exception as e:
                 print(f"Audio transcription failed: {e}")
-                # Add a note about failure and continue with any text/caption
-                fail_note = f"[Audio transcription failed: {str(e)}]"
-                content_parts.append({
-                    "type": "text",
-                    "text": fail_note,
-                })
+                audio_error = str(e)
 
-        # Add text content
+        # Build combined text content
+        text_parts = []
+
+        # Add transcription if available
+        if transcript_text:
+            transcript_prefix = "Transcribed voice message" if has_voice else "Transcribed audio file"
+            text_parts.append(f"[{transcript_prefix}]\n\n{transcript_text.strip()}")
+        elif audio_error:
+            text_parts.append(f"[Audio transcription failed: {audio_error}]")
+
+        # Add main message context
         default_media_note = (
             'User sent an image.' if has_photo and not (has_voice or has_audio) else
             'User sent an audio message.' if (has_voice or has_audio) and not message_text else
@@ -1266,9 +1265,13 @@ def process_message_async(update: dict):
         )
         displayed_text = message_text if message_text else default_media_note
         context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{displayed_text}"
+        text_parts.append(context_message)
+
+        # Combine all text parts into a single text content
+        combined_text = "\n\n".join(text_parts)
         content_parts.append({
             "type": "text",
-            "text": context_message
+            "text": combined_text
         })
         
         print(f"Context message: {context_message}")
