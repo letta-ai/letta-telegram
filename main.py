@@ -32,7 +32,7 @@ app = modal.App("letta-telegram-bot", image=image)
 # The time a container will remain warm after receiving a message.
 # A higher number here means that there will generally be lower latency for
 # messages sent in the same window.
-SCALEDOWN_WINDOW=30
+SCALEDOWN_WINDOW=300
 
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
