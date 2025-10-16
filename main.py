@@ -626,23 +626,20 @@ First contact: Telegram
 - web_search: When user needs current information
 - archival_memory_insert: Save important details silently
 - archival_memory_search: Check before asking repeated questions
-- conversation_search: Find past discussions
-- send_message: Always use for responses"""
+- conversation_search: Find past discussions"""
 
         communication_guidelines = """Communication style:
 - Natural and conversational
 - Answer directly without excessive enthusiasm
-- Use send_message tool for all responses
 - Adapt based on observed preferences, not by asking
 - Only ask questions when truly necessary for the task
 - Respond in markdown format"""
 
         procedures_block = """Standard procedures:
-1. Always respond using send_message tool
-2. Save important details to archival memory without announcing it
-3. Check memories before asking repeated questions
-4. Only mention memory management if blocks are actually full
-5. On first interaction, ask the user to introduce themselves and provide starter ideas"""
+1. Save important details to archival memory without announcing it
+2. Check memories before asking repeated questions
+3. Only mention memory management if blocks are actually full
+4. On first interaction, ask the user to introduce themselves and provide starter ideas"""
 
         # Scratchpad block
         scratchpad_block = """Scratchpad:
@@ -1102,7 +1099,7 @@ def process_message_async(update: dict):
                         send_telegram_message(chat_id, f"({agent.name} is ready)")
 
                         # Create introduction flow
-                        intro_context = f"[New user {user_name} just created you as their first Letta agent via Telegram (chat_id: {chat_id})]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news"
+                        intro_context = f"[New user {user_name} just created you as their first Letta agent via Telegram (chat_id: {chat_id})]\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news"
 
                         # Process agent introduction with streaming
                         response_stream = client.agents.messages.create_stream(
@@ -1264,7 +1261,7 @@ def process_message_async(update: dict):
             ''
         )
         displayed_text = message_text if message_text else default_media_note
-        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\nIMPORTANT: Please respond to this message using the send_message tool.\n\n{displayed_text}"
+        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n{displayed_text}"
         text_parts.append(context_message)
 
         # Combine all text parts into a single text content
@@ -1556,7 +1553,7 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
                 send_telegram_message(chat_id, f"({agent.name} is ready - we've asked {agent.name} to greet you, please wait)")
                 
                 # Create introduction message for Ion
-                intro_context = f"[User {user_name} just created you as their Ion agent via Telegram bot]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself as Ion to {user_name}. Explain briefly that you're different - you remember everything and develop theories about how they think. Suggest ways to begin:\n• Share a link or article you'd like to discuss\n• Ask me to research something you're curious about\n• Tell me about yourself - interests, work, what excites you\n• Give me a problem to think about with you\n• Or just start talking - I learn from everything we discuss\n\nMention that unlike other AIs, you'll remember this conversation forever and build on it next time."
+                intro_context = f"[User {user_name} just created you as their Ion agent via Telegram bot]\n\nIntroduce yourself as Ion to {user_name}. Explain briefly that you're different - you remember everything and develop theories about how they think. Suggest ways to begin:\n• Share a link or article you'd like to discuss\n• Ask me to research something you're curious about\n• Tell me about yourself - interests, work, what excites you\n• Give me a problem to think about with you\n• Or just start talking - I learn from everything we discuss\n\nMention that unlike other AIs, you'll remember this conversation forever and build on it next time."
                 
                 # Send introduction request to Ion
                 response_stream = client.agents.messages.create_stream(
@@ -2418,7 +2415,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             send_compact_help_card(chat_id)
 
             # Create introduction message
-            intro_context = f"[User {user_name} just created you using /make-default-agent command via Telegram (chat_id: {chat_id})]\n\nIMPORTANT: Please respond using the send_message tool.\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news\n\nYou can mention they can learn more about Letta on Discord (https://discord.com/invite/letta) if relevant."
+            intro_context = f"[User {user_name} just created you using /make-default-agent command via Telegram (chat_id: {chat_id})]\n\nIntroduce yourself briefly to {user_name} and ask them to tell you a bit about themselves. Then provide a few starter ideas in bullet points, such as:\n• Send a link to an article for me to read and summarize\n• Ask me to research a topic you're curious about\n• Introduce yourself in detail so I can remember your interests\n• Paste information you'd like me to remember\n• Ask questions about current events or news\n\nYou can mention they can learn more about Letta on Discord (https://discord.com/invite/letta) if relevant."
 
             # Stream the agent's introduction
             response_stream = client.agents.messages.create_stream(
@@ -4835,7 +4832,6 @@ def process_twilio_message_async(payload: dict):
         # Prepare content (text-only for now)
         context_message = (
             f"[Message from {'WhatsApp' if is_whatsapp_sender(from_num) else 'SMS'} user {from_num}]\n\n"
-            "IMPORTANT: Please respond using the send_message tool.\n\n"
             f"{body if body else '(no text)'}"
         )
         content_parts = [{"type": "text", "text": context_message}]
