@@ -21,34 +21,39 @@ class TelegramMessageData(BaseModel):
 def notify_via_telegram(message: str) -> str:
     """
     Send a notification message to the Telegram user.
-    
+
     This tool sends a notification to a Telegram chat using the bot API.
     It requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
-    
+
     Args:
         message (str): The notification message to send to the user
-        
+
     Returns:
         str: Confirmation that the message was sent or error message
     """
     import os
     import requests
-    
+
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    
+
     if not bot_token:
         return "Error: TELEGRAM_BOT_TOKEN environment variable is not set"
-    
+
     if not chat_id:
         return "Error: TELEGRAM_CHAT_ID environment variable is not set"
-    
-    # Escape MarkdownV2 special characters
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    markdown_text = message
-    for char in special_chars:
-        markdown_text = markdown_text.replace(char, f'\\{char}')
-    
+
+    # Convert to Telegram MarkdownV2 format using telegramify-markdown
+    try:
+        import telegramify_markdown
+        markdown_text = telegramify_markdown.markdownify(message)
+    except Exception as e:
+        # Fallback: return the original text with basic escaping
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        markdown_text = message
+        for char in special_chars:
+            markdown_text = markdown_text.replace(char, f'\\{char}')
+
     # Send message via Telegram API
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -56,7 +61,7 @@ def notify_via_telegram(message: str) -> str:
         "text": markdown_text,
         "parse_mode": "MarkdownV2"
     }
-    
+
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
@@ -91,10 +96,15 @@ def register_tool(api_key: Optional[str] = None):
     
     # Register the tool
     try:
+        from letta_client.types import PipRequirement
+
         tool = client.tools.upsert_from_function(
             func=notify_via_telegram,
             args_schema=TelegramMessageData,
-            tags=["telegram", "notification", "messaging"]
+            tags=["telegram", "notification", "messaging"],
+            pip_requirements=[
+                PipRequirement(name="telegramify-markdown")
+            ]
         )
         print(f"✅ Tool registered successfully!")
         print(f"   Tool ID: {tool.id}")
