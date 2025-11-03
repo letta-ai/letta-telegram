@@ -1030,6 +1030,33 @@ def process_message_async(update: dict):
         # Extract text (either direct text or photo caption)
         message_text = message.get("text", "") or message.get("caption", "")
         
+        # Check for reply/quote to another message
+        quoted_text = None
+        quoted_from = None
+        if "reply_to_message" in message:
+            reply_msg = message["reply_to_message"]
+            quoted_text = reply_msg.get("text", "") or reply_msg.get("caption", "")
+            # Get the username of who sent the original message
+            if "from" in reply_msg:
+                quoted_from = reply_msg["from"].get("username") or reply_msg["from"].get("first_name", "someone")
+            else:
+                quoted_from = "someone"
+            
+            # Handle case where quoted message might be media without text
+            if not quoted_text:
+                if "photo" in reply_msg:
+                    quoted_text = "[an image]"
+                elif "voice" in reply_msg:
+                    quoted_text = "[a voice message]"
+                elif "audio" in reply_msg:
+                    quoted_text = "[an audio file]"
+                elif "video" in reply_msg:
+                    quoted_text = "[a video]"
+                elif "document" in reply_msg:
+                    quoted_text = "[a document]"
+                else:
+                    quoted_text = "[a message]"
+        
         print(f"Processing message: {'[IMAGE]' if has_photo else ''}{message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
 
         # Check for user-specific credentials
@@ -1261,7 +1288,18 @@ def process_message_async(update: dict):
             ''
         )
         displayed_text = message_text if message_text else default_media_note
-        context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n{displayed_text}"
+        
+        # Build context message with optional quoted content
+        if quoted_text and quoted_from:
+            context_message = (
+                f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n"
+                f"[{user_name} is replying to a message from {quoted_from}]\n"
+                f"Original message: {quoted_text}\n\n"
+                f"{user_name}'s reply: {displayed_text}"
+            )
+        else:
+            context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n{displayed_text}"
+        
         text_parts.append(context_message)
 
         # Combine all text parts into a single text content
