@@ -1372,7 +1372,7 @@ def process_message_async(update: dict):
 
                             if reasoning_enabled:
                                 reasoning_text = getattr(event, 'reasoning', '')
-                                content = f"(**{agent_name}** thought)\n\n{blockquote_message(reasoning_text)}"
+                                content = f"(**{agent_name}** thought)\n{blockquote_message(reasoning_text)}"
                                 send_telegram_message(chat_id, content)
                                 last_activity = current_time
 
