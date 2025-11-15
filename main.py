@@ -1436,6 +1436,10 @@ def process_message_async(update: dict):
                                         tool_msg = f"(**{agent_name}** ran code)"
                                         tool_msg += f"\n```{language}\n{code}\n```"
 
+                                    elif tool_name == "web_search":
+                                        query = args_obj.get('query', '')
+                                        tool_msg = f"(**{agent_name}** is searching for \"{query}\")"
+
                                     else:
                                         tool_msg = f"(**{agent_name}** using tool: {tool_name})"
                                         formatted_args = json.dumps(args_obj, indent=2)
