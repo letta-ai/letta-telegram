@@ -2706,7 +2706,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
                     response = f"The current agent is **{agent_name}**, with {tools_count} tools. \n\nDescription:\n"
                     if agent_description:
                         response += f"> {agent_description}\n\n"
-                    response += f"\nAgent ID: `{current_agent_id}``\n\n"
+                    response += f"\nAgent ID: `{current_agent_id}`\n\n"
                     response += "Usage:\n"
                     response += "`/agents` - List all available agents\n"
                     response += "`/agent <agent_id>` - Switch to different agent"
