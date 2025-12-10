@@ -1330,6 +1330,9 @@ def process_message_async(update: dict):
     from letta_client import Letta
     from letta_client.core.api_error import ApiError
 
+    # Reload volume to get latest agent/credential data from other containers
+    volume.reload()
+
     print(f"Background processing update: {update}")
 
     try:
@@ -5253,6 +5256,9 @@ def process_twilio_message_async(payload: dict):
     Sends assistant messages back via Twilio.
     """
     try:
+        # Reload volume to get latest agent/credential data from other containers
+        volume.reload()
+
         corr_id = payload.get("corr_id", "-")
         from_num = payload.get("From", "")
         to_num = payload.get("To", "")
@@ -5334,6 +5340,9 @@ async def oauth_callback(request: Request):
     OAuth callback handler - receives authorization code from Letta after user authorization.
     """
     from fastapi.responses import HTMLResponse
+
+    # Reload volume to get latest OAuth state from other containers
+    volume.reload()
 
     code = request.query_params.get("code")
     state = request.query_params.get("state")
