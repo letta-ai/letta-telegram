@@ -71,6 +71,303 @@ def get_webhook_secret():
     """Get the Telegram webhook secret from environment variables"""
     return os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 
+# ------------------ OAuth helpers ------------------
+
+def get_oauth_config() -> dict:
+    """Load OAuth configuration from environment variables."""
+    return {
+        "client_id": os.environ.get("LETTA_OAUTH_CLIENT_ID"),
+        "client_secret": os.environ.get("LETTA_OAUTH_CLIENT_SECRET"),
+    }
+
+def generate_oauth_state() -> str:
+    """Generate cryptographically secure state parameter for OAuth."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+def generate_pkce_pair() -> tuple[str, str]:
+    """
+    Generate PKCE code_verifier and code_challenge (S256 method).
+    Returns (code_verifier, code_challenge).
+    """
+    import secrets
+    import hashlib
+    import base64
+
+    # Generate code verifier (43-128 characters)
+    code_verifier = secrets.token_urlsafe(64)
+
+    # Generate S256 code challenge
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b'=').decode()
+
+    return code_verifier, code_challenge
+
+def store_oauth_pending(state: str, user_id: str, platform: str, chat_id: str,
+                        code_verifier: str, from_hint: str = None) -> bool:
+    """
+    Store pending OAuth state for callback matching.
+    State expires after 10 minutes.
+    """
+    try:
+        pending_dir = "/data/oauth_pending"
+        os.makedirs(pending_dir, exist_ok=True)
+
+        expires_at = datetime.now().timestamp() + 600  # 10 minutes
+
+        pending_data = {
+            "state": state,
+            "user_id": user_id,
+            "platform": platform,
+            "chat_id": chat_id,
+            "code_verifier": code_verifier,
+            "from_hint": from_hint,
+            "created_at": datetime.now().isoformat(),
+            "expires_at": expires_at
+        }
+
+        pending_path = f"{pending_dir}/{state}.json"
+        with open(pending_path, "w") as f:
+            json.dump(pending_data, f, indent=2)
+
+        volume.commit()
+        return True
+    except Exception as e:
+        print(f"Error storing OAuth pending state: {e}")
+        return False
+
+def get_and_delete_oauth_pending(state: str) -> dict | None:
+    """
+    Retrieve and delete pending OAuth state (one-time use).
+    Returns None if not found or expired.
+    """
+    try:
+        pending_path = f"/data/oauth_pending/{state}.json"
+        if not os.path.exists(pending_path):
+            return None
+
+        with open(pending_path, "r") as f:
+            pending_data = json.load(f)
+
+        # Check expiration
+        if datetime.now().timestamp() > pending_data.get("expires_at", 0):
+            # Expired - delete and return None
+            os.remove(pending_path)
+            volume.commit()
+            return None
+
+        # Delete after reading (one-time use)
+        os.remove(pending_path)
+        volume.commit()
+
+        return pending_data
+    except Exception as e:
+        print(f"Error retrieving OAuth pending state: {e}")
+        return None
+
+def cleanup_expired_oauth_states():
+    """Remove expired OAuth pending states."""
+    try:
+        pending_dir = "/data/oauth_pending"
+        if not os.path.exists(pending_dir):
+            return
+
+        now = datetime.now().timestamp()
+        for filename in os.listdir(pending_dir):
+            if not filename.endswith(".json"):
+                continue
+            filepath = os.path.join(pending_dir, filename)
+            try:
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+                if now > data.get("expires_at", 0):
+                    os.remove(filepath)
+            except Exception:
+                pass
+
+        volume.commit()
+    except Exception as e:
+        print(f"Error cleaning up OAuth states: {e}")
+
+def build_oauth_url(state: str, code_challenge: str, redirect_uri: str) -> str:
+    """Build the OAuth authorization URL."""
+    from urllib.parse import urlencode
+
+    oauth_config = get_oauth_config()
+    params = {
+        "client_id": oauth_config["client_id"],
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"https://app.letta.com/oauth/authorize?{urlencode(params)}"
+
+def exchange_oauth_code(code: str, code_verifier: str, redirect_uri: str) -> dict:
+    """
+    Exchange authorization code for tokens via Letta OAuth API.
+    Returns token response dict or dict with 'error' key on failure.
+    """
+    import requests
+
+    oauth_config = get_oauth_config()
+
+    try:
+        response = requests.post(
+            "https://app.letta.com/api/oauth/token",
+            json={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": oauth_config["client_id"],
+                "client_secret": oauth_config["client_secret"],
+                "code_verifier": code_verifier,
+            },
+            timeout=30
+        )
+        return response.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def store_oauth_credentials(user_id: str, tokens: dict, api_url: str = "https://api.letta.com") -> bool:
+    """
+    Store OAuth tokens (encrypted) in user credentials.
+    Uses new format with auth_type='oauth'.
+    """
+    try:
+        user_dir = f"/data/users/{user_id}"
+        os.makedirs(user_dir, exist_ok=True)
+
+        # Encrypt tokens
+        encrypted_access = encrypt_api_key(user_id, tokens["access_token"])
+        encrypted_refresh = encrypt_api_key(user_id, tokens["refresh_token"]) if tokens.get("refresh_token") else None
+
+        # Calculate expiration time
+        expires_in = tokens.get("expires_in", 3600)
+        token_expires_at = (datetime.now().timestamp() + expires_in)
+
+        credentials = {
+            "auth_type": "oauth",
+            "access_token": encrypted_access,
+            "refresh_token": encrypted_refresh,
+            "token_expires_at": token_expires_at,
+            "token_type": tokens.get("token_type", "Bearer"),
+            "scope": tokens.get("scope", ""),
+            "api_url": api_url,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+
+        credentials_path = f"{user_dir}/credentials.json"
+        with open(credentials_path, "w") as f:
+            json.dump(credentials, f, indent=2)
+
+        volume.commit()
+        return True
+    except Exception as e:
+        print(f"Error storing OAuth credentials for {user_id}: {e}")
+        raise
+
+def refresh_oauth_token(user_id: str) -> bool:
+    """
+    Refresh an expired OAuth access token.
+    Returns True on success, False on failure.
+    """
+    import requests
+
+    try:
+        credentials_path = f"/data/users/{user_id}/credentials.json"
+        if not os.path.exists(credentials_path):
+            return False
+
+        with open(credentials_path, "r") as f:
+            credentials = json.load(f)
+
+        if credentials.get("auth_type") != "oauth" or not credentials.get("refresh_token"):
+            return False
+
+        # Decrypt refresh token
+        refresh_token = decrypt_api_key(user_id, credentials["refresh_token"])
+
+        oauth_config = get_oauth_config()
+
+        response = requests.post(
+            "https://app.letta.com/api/oauth/token",
+            json={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": oauth_config["client_id"],
+                "client_secret": oauth_config["client_secret"],
+            },
+            timeout=30
+        )
+
+        tokens = response.json()
+        if "error" in tokens:
+            print(f"OAuth refresh failed for {user_id}: {tokens['error']}")
+            return False
+
+        # Update stored credentials with new tokens
+        encrypted_access = encrypt_api_key(user_id, tokens["access_token"])
+        expires_in = tokens.get("expires_in", 3600)
+
+        credentials["access_token"] = encrypted_access
+        credentials["token_expires_at"] = datetime.now().timestamp() + expires_in
+        credentials["updated_at"] = datetime.now().isoformat()
+
+        # Update refresh token if a new one was provided
+        if tokens.get("refresh_token"):
+            credentials["refresh_token"] = encrypt_api_key(user_id, tokens["refresh_token"])
+
+        with open(credentials_path, "w") as f:
+            json.dump(credentials, f, indent=2)
+
+        volume.commit()
+        return True
+    except Exception as e:
+        print(f"Error refreshing OAuth token for {user_id}: {e}")
+        return False
+
+def revoke_oauth_token(user_id: str) -> bool:
+    """
+    Revoke OAuth tokens for a user.
+    Returns True on success (or if no OAuth credentials exist).
+    """
+    import requests
+
+    try:
+        credentials_path = f"/data/users/{user_id}/credentials.json"
+        if not os.path.exists(credentials_path):
+            return True
+
+        with open(credentials_path, "r") as f:
+            credentials = json.load(f)
+
+        if credentials.get("auth_type") != "oauth":
+            return True  # Not OAuth, nothing to revoke
+
+        oauth_config = get_oauth_config()
+
+        # Revoke refresh token (this also revokes associated access token)
+        if credentials.get("refresh_token"):
+            refresh_token = decrypt_api_key(user_id, credentials["refresh_token"])
+            requests.post(
+                "https://app.letta.com/api/oauth/revoke",
+                json={
+                    "token": refresh_token,
+                    "token_type_hint": "refresh_token",
+                    "client_id": oauth_config["client_id"],
+                    "client_secret": oauth_config["client_secret"],
+                },
+                timeout=30
+            )
+
+        return True
+    except Exception as e:
+        print(f"Error revoking OAuth token for {user_id}: {e}")
+        return False
+
 # ------------------ Twilio helpers ------------------
 def get_twilio_config() -> dict:
     """Load Twilio configuration from environment variables."""
@@ -219,10 +516,15 @@ def store_user_credentials(user_id: str, api_key: str, api_url: str = "https://a
 
 def get_user_credentials(user_id: str) -> Dict[str, str]:
     """
-    Get user credentials from volume
-    Returns dict with 'api_key' and 'api_url', or None if not found
+    Get user credentials from volume.
+    Handles both OAuth tokens and legacy API keys.
+    Auto-refreshes OAuth tokens if expired.
+    Returns dict with 'api_key' and 'api_url', or None if not found.
     """
     try:
+        # Reload volume to get latest data from other containers (e.g., OAuth callback)
+        volume.reload()
+
         credentials_path = f"/data/users/{user_id}/credentials.json"
         if not os.path.exists(credentials_path):
             return None
@@ -230,13 +532,34 @@ def get_user_credentials(user_id: str) -> Dict[str, str]:
         with open(credentials_path, "r") as f:
             credentials = json.load(f)
 
-        # Decrypt the API key using user-specific key
-        decrypted_key = decrypt_api_key(user_id, credentials["api_key"])
+        # Check if this is OAuth credentials
+        if credentials.get("auth_type") == "oauth":
+            # Check if token is expired (with 5 minute buffer)
+            token_expires_at = credentials.get("token_expires_at", 0)
+            if datetime.now().timestamp() > (token_expires_at - 300):
+                # Token expired or expiring soon, try to refresh
+                if refresh_oauth_token(user_id):
+                    # Re-read the refreshed credentials
+                    with open(credentials_path, "r") as f:
+                        credentials = json.load(f)
+                else:
+                    # Refresh failed - credentials are invalid
+                    print(f"OAuth token refresh failed for {user_id}")
+                    return None
 
-        return {
-            "api_key": decrypted_key,
-            "api_url": credentials.get("api_url", "https://api.letta.com")
-        }
+            # Decrypt and return access token as api_key
+            decrypted_token = decrypt_api_key(user_id, credentials["access_token"])
+            return {
+                "api_key": decrypted_token,
+                "api_url": credentials.get("api_url", "https://api.letta.com")
+            }
+        else:
+            # Legacy API key path
+            decrypted_key = decrypt_api_key(user_id, credentials["api_key"])
+            return {
+                "api_key": decrypted_key,
+                "api_url": credentials.get("api_url", "https://api.letta.com")
+            }
 
     except Exception as e:
         print(f"Error retrieving user credentials for {user_id}: {e}")
@@ -994,6 +1317,7 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
         modal.Secret.from_name("telegram-bot"),
         # Optional OpenAI API key for audio transcription
         modal.Secret.from_name("openai"),
+        modal.Secret.from_name("letta-oauth"),
     ],
     volumes={"/data": volume},
     scaledown_window=SCALEDOWN_WINDOW,
@@ -1064,7 +1388,7 @@ def process_message_async(update: dict):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -1561,7 +1885,7 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
             return
         
         if not user_credentials:
-            response = "(need to authenticate first)\n\nuse /login <api_key>"
+            response = "(need to authenticate first)\n\nuse /login to sign in"
             keyboard = create_inline_keyboard([["show me how"]])
             send_telegram_message(chat_id, response, keyboard)
             return
@@ -1670,7 +1994,7 @@ def handle_callback_query(update: dict):
             send_telegram_message(chat_id, response, keyboard)
             
         elif callback_data == "i_know_what_i'm_doing":
-            send_telegram_message(chat_id, "(alright. use /login <api_key> when you're ready)")
+            send_telegram_message(chat_id, "(alright. use /login when you're ready)")
 
         elif callback_data == "i_have_a_key":
             msg = (
@@ -1678,15 +2002,15 @@ def handle_callback_query(update: dict):
                 "i will delete the key message immediately. for safety, use direct messages, not groups.\n\n"
                 "example: /login sk-abc123"
             )
-            keyboard = create_inline_keyboard([["i sent it", "i_sent_it"]])
+            keyboard = create_inline_keyboard([["done"]])
             send_telegram_message(chat_id, msg, keyboard)
 
         elif callback_data == "i_sent_it":
             send_telegram_message(chat_id, "(waiting for your /login command)")
             
         elif callback_data == "got_my_key":
-            response = "(nice. just do /login and paste your key)\n\nlike: /login sk-whatever\n\ni'll delete the message right away for privacy"
-            keyboard = create_inline_keyboard([["got it"]])
+            response = "(nice. send /login <your-key>)\n\nexample: /login sk-abc123\n\ni'll delete the message right away for privacy"
+            keyboard = create_inline_keyboard([["done"]])
             send_telegram_message(chat_id, response, keyboard)
             
         elif callback_data == "need_help":
@@ -1707,7 +2031,7 @@ def handle_callback_query(update: dict):
             send_telegram_message(chat_id, response, keyboard)
             
         elif callback_data == "i_have_an_account":
-            response = "(alright. use /login <api_key> to connect)\n\nexample: /login sk-abc123"
+            response = "(alright. use /login to connect your account)"
             send_telegram_message(chat_id, response)
             
         elif callback_data == "learn_more":
@@ -1715,7 +2039,7 @@ def handle_callback_query(update: dict):
             send_telegram_message(chat_id, response)
             
         elif callback_data == "show_me_how":
-            response = "(getting your api key)\n\n1. go to app.letta.com\n2. sign up or log in\n3. click on settings\n4. find api keys section\n5. create new key\n6. copy it\n7. come back here and do /login <your-key>"
+            response = "(getting your api key)\n\n1. go to app.letta.com\n2. sign up or log in\n3. click on settings\n4. find api keys section\n5. create new key\n6. copy it\n7. come back here and send /login <your-key>"
             send_telegram_message(chat_id, response)
             
         elif callback_data == "create_new":
@@ -1821,7 +2145,8 @@ def handle_callback_query(update: dict):
 @app.function(
     image=image,
     secrets=[
-        modal.Secret.from_name("telegram-bot")
+        modal.Secret.from_name("telegram-bot"),
+        modal.Secret.from_name("letta-oauth"),
     ],
     volumes={"/data": volume},
     scaledown_window=SCALEDOWN_WINDOW,
@@ -2131,8 +2456,28 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
         # Parse the command: /login <api_key> [api_url]
         parts = message_text.strip().split()
 
-        if len(parts) < 2:
-            send_telegram_message(chat_id, "(error: usage is /login <api_key> - get your key from https://app.letta.com)")
+        # Check if no API key provided - offer OAuth
+        if len(parts) < 2 or not parts[1].startswith("sk-"):
+            oauth_callback_url = os.environ.get("LETTA_OAUTH_CALLBACK_URL")
+            if oauth_callback_url:
+                # Generate OAuth URL
+                state = generate_oauth_state()
+                code_verifier, code_challenge = generate_pkce_pair()
+                store_oauth_pending(
+                    state=state,
+                    user_id=user_id,
+                    platform="telegram",
+                    chat_id=chat_id,
+                    code_verifier=code_verifier
+                )
+                oauth_url = build_oauth_url(state, code_challenge, oauth_callback_url)
+                response = "(sign in with your letta account)\n\ntap the button below, or use /login <api_key> for manual setup."
+                keyboard = create_inline_keyboard([
+                    ({"text": "sign in with letta", "url": oauth_url}),
+                ])
+                send_telegram_message(chat_id, response, keyboard)
+            else:
+                send_telegram_message(chat_id, "(error: usage is /login <api_key> - get your key from https://app.letta.com)")
             return
 
         api_key = parts[1].strip()
@@ -2306,11 +2651,11 @@ def handle_refresh_command(update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
         # Get current agent info
@@ -2363,16 +2708,17 @@ def handle_logout_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
 
         if not credentials:
-            send_telegram_message(chat_id, "❌ You are not logged in. Use `/login <api_key>` to authenticate.")
+            send_telegram_message(chat_id, "❌ You are not logged in. Use /login to sign in.")
             return
 
-        # Delete the credentials
+        # Revoke OAuth tokens if applicable, then delete credentials
         try:
+            revoke_oauth_token(user_id)
             delete_user_credentials(user_id)
 
             send_telegram_message(chat_id, "(you've been logged out, goodbye)")
@@ -2400,11 +2746,11 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try `/login <api_key>` first.")
+            send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try /login first.")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
         # Get current project
@@ -2560,12 +2906,12 @@ def handle_status_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
 
         if not credentials:
-            send_telegram_message(chat_id, "(not authenticated - use /login <api_key>)")
+            send_telegram_message(chat_id, "(not authenticated - use /login to sign in)")
             return
 
         # Validate the stored credentials
@@ -2599,7 +2945,7 @@ def handle_start_command(update: dict, chat_id: str):
             credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
 
@@ -2623,13 +2969,35 @@ def handle_start_command(update: dict, chat_id: str):
                 ])
             send_telegram_message(chat_id, response, keyboard)
         else:
-            # New user - provide interactive setup guide with URL + callbacks
+            # New user - provide interactive setup guide
+            # Check if OAuth is configured
+            oauth_callback_url = os.environ.get("LETTA_OAUTH_CALLBACK_URL")
             response = f"(welcome to letta, {first_name.lower()})\n\nconnect your account to start."
-            keyboard = create_inline_keyboard([
-                ({"text": "get api key", "url": "https://app.letta.com"}),
-                ("i have a key", "i_have_a_key"),
-                ("learn more", "learn_more"),
-            ])
+
+            if oauth_callback_url:
+                # Generate OAuth URL for inline button
+                state = generate_oauth_state()
+                code_verifier, code_challenge = generate_pkce_pair()
+                store_oauth_pending(
+                    state=state,
+                    user_id=user_id,
+                    platform="telegram",
+                    chat_id=chat_id,
+                    code_verifier=code_verifier
+                )
+                oauth_url = build_oauth_url(state, code_challenge, oauth_callback_url)
+                keyboard = create_inline_keyboard([
+                    ({"text": "sign in with letta", "url": oauth_url}),
+                    ("i have an api key", "i_have_a_key"),
+                    ("learn more", "learn_more"),
+                ])
+            else:
+                # Fallback without OAuth
+                keyboard = create_inline_keyboard([
+                    ({"text": "get api key", "url": "https://app.letta.com"}),
+                    ("i have a key", "i_have_a_key"),
+                    ("learn more", "learn_more"),
+                ])
             send_telegram_message(chat_id, response, keyboard)
 
     except Exception as e:
@@ -2653,12 +3021,12 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required: get your API key from https://app.letta.com then use /login <api_key>)")
+            send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
         # Use user-specific credentials
@@ -2779,11 +3147,11 @@ def handle_blocks_command(update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
         # Get current agent info
@@ -2846,11 +3214,11 @@ def handle_block_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+            send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
         # Get current agent info
@@ -2900,7 +3268,8 @@ def handle_help_command(chat_id: str):
     """
     help_text = """Commands:
 /start - Setup guide
-/login <api_key> - Authenticate
+/login - Sign in with Letta account
+/login <api_key> - Authenticate with API key
 /logout - Remove credentials
 /status - Check authentication
 /project - Show/switch project
@@ -2987,11 +3356,11 @@ def handle_agents_command(update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Use user-specific credentials
@@ -3089,11 +3458,11 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Use user-specific credentials
@@ -3502,13 +3871,13 @@ Usage:
         try:
             credentials = get_user_credentials(telegram_user_id)
             if not credentials:
-                send_telegram_message(chat_id, "(authentication required - use /login <api_key>)")
+                send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
                 return
             
             letta_api_key = credentials["api_key"]
             letta_api_url = credentials.get("api_url", "https://api.letta.com")
         except Exception as e:
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             return
 
         # Get current agent
@@ -3761,11 +4130,11 @@ def handle_shortcut_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Use user-specific credentials
@@ -3980,11 +4349,11 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Parse the command: /switch <shortcut_name>
@@ -4088,11 +4457,11 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Use user-specific credentials
@@ -4204,11 +4573,11 @@ def handle_project_command(message: str, update: dict, chat_id: str):
             user_credentials = get_user_credentials(user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
-            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login <api_key>)")
+            send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
         if not user_credentials:
-            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse `/start` for a complete setup guide, or:\n\n1. Get your API key from https://app.letta.com\n2. Use `/login <api_key>` to authenticate")
+            send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
         # Use user-specific credentials
@@ -4664,6 +5033,7 @@ def send_compact_help_card(chat_id: str):
     secrets=[
         modal.Secret.from_name("telegram-bot"),  # still needed for shared encryption key fallback
         modal.Secret.from_name("twilio"),
+        modal.Secret.from_name("letta-oauth"),
     ],
     volumes={"/data": volume},
     scaledown_window=SCALEDOWN_WINDOW,
@@ -4707,7 +5077,8 @@ async def twilio_webhook(request: Request):
             help_msg = (
                 "Letta SMS/WhatsApp\n\n"
                 "Commands:\n"
-                "/login <api_key> – Authenticate\n"
+                "/login – Sign in with Letta account\n"
+                "/login <api_key> – Authenticate with API key\n"
                 "/status – Check status\n"
                 "/agents – List your agents\n"
                 "/agent <id> – Select agent\n"
@@ -4723,33 +5094,69 @@ async def twilio_webhook(request: Request):
         if body.lower().startswith("/login"):
             print(f"[Twilio][{corr_id}] Command: /login")
             parts = body.split()
-            if len(parts) < 2:
-                print(f"[Twilio][{corr_id}] /login missing api key")
-                send_twilio_message(from_num, "Usage: /login <api_key>", from_hint=to_num)
+
+            # Check if user provided an API key (legacy flow)
+            if len(parts) >= 2 and parts[1].startswith("sk-"):
+                api_key = parts[1]
+                api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+
+                # Validate key
+                ok, msg, default_proj = validate_letta_api_key(api_key, api_url)
+                if not ok:
+                    print(f"[Twilio][{corr_id}] Login failed: {msg}")
+                    send_twilio_message(from_num, f"Login failed: {msg}", from_hint=to_num)
+                    return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
+
+                store_user_credentials(user_id, api_key, api_url)
+
+                # Optionally set default project if present
+                if default_proj and default_proj[0]:
+                    save_chat_project(chat_id, default_proj[0], default_proj[1], default_proj[2])
+
+                print(f"[Twilio][{corr_id}] Login success; stored credentials for {user_id}")
+                send_twilio_message(from_num, "Authenticated successfully. Use /agents to list agents, then /agent <id> to select.", from_hint=to_num)
                 return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
-            api_key = parts[1]
-            api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
 
-            # Validate key
-            ok, msg, default_proj = validate_letta_api_key(api_key, api_url)
-            if not ok:
-                print(f"[Twilio][{corr_id}] Login failed: {msg}")
-                send_twilio_message(from_num, f"Login failed: {msg}", from_hint=to_num)
+            # OAuth flow - generate login link
+            oauth_callback_url = os.environ.get("LETTA_OAUTH_CALLBACK_URL")
+            if not oauth_callback_url:
+                # Fallback message if OAuth not configured
+                print(f"[Twilio][{corr_id}] OAuth not configured, falling back to API key instructions")
+                send_twilio_message(from_num, "Usage: /login <api_key>\n\nGet your API key from app.letta.com", from_hint=to_num)
                 return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
 
-            store_user_credentials(user_id, api_key, api_url)
+            # Generate PKCE pair and state
+            state = generate_oauth_state()
+            code_verifier, code_challenge = generate_pkce_pair()
 
-            # Optionally set default project if present
-            if default_proj and default_proj[0]:
-                save_chat_project(chat_id, default_proj[0], default_proj[1], default_proj[2])
+            # Store pending OAuth state
+            store_oauth_pending(
+                state=state,
+                user_id=user_id,
+                platform="twilio",
+                chat_id=chat_id,
+                code_verifier=code_verifier,
+                from_hint=to_num
+            )
 
-            print(f"[Twilio][{corr_id}] Login success; stored credentials for {user_id}")
-            send_twilio_message(from_num, "Authenticated successfully. Use /agents to list agents, then /agent <id> to select.", from_hint=to_num)
+            # Build OAuth URL
+            oauth_url = build_oauth_url(state, code_challenge, oauth_callback_url)
+
+            print(f"[Twilio][{corr_id}] Generated OAuth URL for {user_id}")
+            msg = (
+                "Sign in with Letta:\n\n"
+                f"{oauth_url}\n\n"
+                "Tap the link to connect your Letta account. Link expires in 10 minutes.\n\n"
+                "Or use: /login <api_key>"
+            )
+            send_twilio_message(from_num, msg, from_hint=to_num)
             return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
 
         # Logout
         if body.lower().startswith("/logout"):
             print(f"[Twilio][{corr_id}] Command: /logout")
+            # Revoke OAuth tokens if applicable
+            revoke_oauth_token(user_id)
             delete_user_credentials(user_id)
             send_twilio_message(from_num, "Logged out and credentials removed.", from_hint=to_num)
             return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
@@ -4759,7 +5166,7 @@ async def twilio_webhook(request: Request):
             print(f"[Twilio][{corr_id}] Command: /status")
             creds = get_user_credentials(user_id)
             if not creds:
-                send_twilio_message(from_num, "Not authenticated. Use /login <api_key>.", from_hint=to_num)
+                send_twilio_message(from_num, "Not authenticated. Use /login to sign in.", from_hint=to_num)
             else:
                 agent_info = get_chat_agent_info(chat_id)
                 agent_line = f"Agent: {agent_info['agent_name']} ({agent_info['agent_id']})" if agent_info else "Agent: not selected"
@@ -4771,7 +5178,7 @@ async def twilio_webhook(request: Request):
             print(f"[Twilio][{corr_id}] Command: /agents")
             creds = get_user_credentials(user_id)
             if not creds:
-                send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+                send_twilio_message(from_num, "Authenticate first. Use /login to sign in.", from_hint=to_num)
                 return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
             client = get_letta_client(creds["api_key"], creds["api_url"], timeout=30.0)
             try:
@@ -4797,7 +5204,7 @@ async def twilio_webhook(request: Request):
             print(f"[Twilio][{corr_id}] Command: /agent <id>")
             creds = get_user_credentials(user_id)
             if not creds:
-                send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+                send_twilio_message(from_num, "Authenticate first. Use /login to sign in.", from_hint=to_num)
                 return FastAPIResponse(content="<Response></Response>", media_type="application/xml")
             new_id = body.split(maxsplit=1)[1].strip()
             try:
@@ -4833,6 +5240,7 @@ async def twilio_webhook(request: Request):
     secrets=[
         modal.Secret.from_name("telegram-bot"),
         modal.Secret.from_name("twilio"),
+        modal.Secret.from_name("letta-oauth"),
         # Optional OpenAI for future media handling (not used now)
         # modal.Secret.from_name("openai"),
     ],
@@ -4858,7 +5266,7 @@ def process_twilio_message_async(payload: dict):
         credentials = get_user_credentials(user_id)
         if not credentials:
             print(f"[Twilio][{corr_id}] No credentials for user; prompting login")
-            send_twilio_message(from_num, "Authenticate first: /login <api_key>", from_hint=to_num)
+            send_twilio_message(from_num, "Authenticate first. Use /login to sign in.", from_hint=to_num)
             return
 
         # Agent must be selected
@@ -4897,7 +5305,7 @@ def process_twilio_message_async(payload: dict):
                     if content and content.strip():
                         print(f"[Twilio][{corr_id}] Forwarding assistant message len={len(content)}")
                         # For SMS/WhatsApp/RCS, send plain text; Twilio handles segmentation
-                        send_twilio_message(from_num, f"{agent_name}:\n\n{content}", from_hint=to_num)
+                        send_twilio_message(from_num, f"({agent_name} says)\n\n{content}", from_hint=to_num)
             except Exception as e:
                 print(f"[Twilio][{corr_id}] Error handling stream event: {e}")
                 continue
@@ -4909,6 +5317,155 @@ def process_twilio_message_async(payload: dict):
                 send_twilio_message(payload["From"], f"Error: {e}", from_hint=payload.get("To"))
         except Exception:
             pass
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("telegram-bot"),
+        modal.Secret.from_name("twilio"),
+        modal.Secret.from_name("letta-oauth"),
+    ],
+    volumes={"/data": volume},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
+@modal.fastapi_endpoint(method="GET")
+async def oauth_callback(request: Request):
+    """
+    OAuth callback handler - receives authorization code from Letta after user authorization.
+    """
+    from fastapi.responses import HTMLResponse
+
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+    error_description = request.query_params.get("error_description", "")
+
+    # Handle OAuth errors
+    if error:
+        error_html = f"""
+        <html>
+        <head><title>Authorization Failed</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h1>Authorization Failed</h1>
+            <p>{error}: {error_description}</p>
+            <p>Please return to your messaging app and try again.</p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=400)
+
+    if not code or not state:
+        return HTMLResponse(
+            content="<html><body><h1>Invalid Request</h1><p>Missing code or state parameter.</p></body></html>",
+            status_code=400
+        )
+
+    # Look up pending OAuth request
+    pending = get_and_delete_oauth_pending(state)
+    if not pending:
+        return HTMLResponse(
+            content="""
+            <html>
+            <head><title>Session Expired</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>Session Expired</h1>
+                <p>Your login session has expired. Please return to your messaging app and try /login again.</p>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Use the configured callback URL to ensure exact match with authorization request
+    redirect_uri = os.environ.get("LETTA_OAUTH_CALLBACK_URL")
+    if not redirect_uri:
+        # Fallback to reconstructing from request (may have mismatches)
+        redirect_uri = str(request.url).split("?")[0]
+
+    # Exchange code for tokens
+    tokens = exchange_oauth_code(code, pending["code_verifier"], redirect_uri)
+
+    if "error" in tokens:
+        error_msg = tokens.get("error_description", tokens["error"])
+        return HTMLResponse(
+            content=f"""
+            <html>
+            <head><title>Authentication Failed</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>Authentication Failed</h1>
+                <p>{error_msg}</p>
+                <p>Please return to your messaging app and try again.</p>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Store OAuth credentials
+    api_url = os.environ.get("LETTA_API_URL", "https://api.letta.com")
+    store_oauth_credentials(pending["user_id"], tokens, api_url)
+
+    # Send confirmation message to user
+    platform = pending.get("platform", "")
+    chat_id = pending.get("chat_id", "")
+    user_id = pending.get("user_id", "")
+
+    if platform == "twilio":
+        # Extract phone number from user_id (format: "twilio:whatsapp:+1234567890" or "twilio:+1234567890")
+        phone = user_id.replace("twilio:", "", 1)
+        from_hint = pending.get("from_hint")
+        try:
+            send_twilio_message(
+                phone,
+                "Successfully connected to Letta! Use /agents to see your agents, then /agent <id> to select one.",
+                from_hint=from_hint
+            )
+        except Exception as e:
+            print(f"Failed to send Twilio confirmation: {e}")
+    elif platform == "telegram":
+        try:
+            send_telegram_message(
+                chat_id,
+                "(connected to letta)\n\nuse /agents to see your agents"
+            )
+        except Exception as e:
+            print(f"Failed to send Telegram confirmation: {e}")
+
+    # Return success page
+    return HTMLResponse(
+        content="""
+        <html>
+        <head>
+            <title>Connected!</title>
+            <style>
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    text-align: center;
+                    padding: 50px;
+                    background-color: #f5f5f5;
+                }
+                .container {
+                    background: white;
+                    border-radius: 12px;
+                    padding: 40px;
+                    max-width: 400px;
+                    margin: 0 auto;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }
+                h1 { color: #22c55e; margin-bottom: 16px; }
+                p { color: #666; line-height: 1.6; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Successfully Connected!</h1>
+                <p>Your Letta account is now linked to your messaging app.</p>
+                <p>You can close this window and return to your conversation.</p>
+            </div>
+        </body>
+        </html>
+        """
+    )
 
 @app.function(image=image, secrets=[modal.Secret.from_name("telegram-bot")])
 @modal.fastapi_endpoint(method="GET")

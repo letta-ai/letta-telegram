@@ -85,6 +85,12 @@ modal secret create twilio \
   TWILIO_WHATSAPP_FROM=$TWILIO_WHATSAPP_FROM \
   TWILIO_VALIDATE_SIGNATURE=true
 
+# Optional: Letta OAuth for "Sign in with Letta" (instead of API keys)
+modal secret create letta-oauth \
+  LETTA_OAUTH_CLIENT_ID=your_oauth_client_id \
+  LETTA_OAUTH_CLIENT_SECRET=your_oauth_client_secret \
+  LETTA_OAUTH_CALLBACK_URL=https://your-workspace--letta-telegram-bot-oauth-callback.modal.run
+
 # Or if you already have them in environment variables:
 modal secret create telegram-bot \
   TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
@@ -158,9 +164,10 @@ Once the bot is deployed, users interact with it through these commands:
 /start                   # Complete setup walkthrough for new users
 /help                    # See all available commands
 
-# Authentication
-/login sk-abc123...      # Authenticate with your Letta API key
-/status                  # Check authentication status  
+# Authentication (two options)
+/login                   # Sign in with Letta account (OAuth - recommended)
+/login sk-abc123...      # Authenticate with API key (legacy method)
+/status                  # Check authentication status
 /logout                  # Remove stored credentials
 
 # Project & Agent Management
@@ -188,7 +195,8 @@ Hello, how are you?      # Regular conversation with your selected agent
 For Twilio (SMS/WhatsApp), use the same commands in plain text:
 
 ```
-/login <api_key>
+/login              # Get a sign-in link (OAuth)
+/login <api_key>    # Or authenticate with API key
 /status
 /agents
 /agent <id>
@@ -207,12 +215,34 @@ Then chat normally by texting your message.
 ### User Flow
 
 1. **First Time**: User sends `/start` → Gets complete setup walkthrough
-2. **Login**: User sends `/login <their_api_key>` → API key validated and stored
+2. **Login**: User taps "Sign in with Letta" button → Authorizes in browser → Automatically connected
+   - **Alternative**: User sends `/login <their_api_key>` → API key validated and stored
 3. **Agent Selection**: User runs `/agent` → Sees their agents, selects one
 4. **Chat**: User can now chat normally with their selected agent
 5. **Management**: User can switch agents, check status, or logout anytime
 
 **Alternative**: Users can send any message → Gets "Authentication Required" prompt with `/start` suggestion
+
+### OAuth Setup (Optional but Recommended)
+
+OAuth allows users to sign in with their Letta account instead of manually copying API keys. This provides a better user experience, especially on mobile.
+
+**To enable OAuth:**
+
+1. Create an OAuth app in the Letta admin panel at app.letta.com
+2. Note your `client_id` and `client_secret`
+3. Create the Modal secret:
+   ```bash
+   modal secret create letta-oauth \
+     LETTA_OAUTH_CLIENT_ID=your_client_id \
+     LETTA_OAUTH_CLIENT_SECRET=your_client_secret \
+     LETTA_OAUTH_CALLBACK_URL=https://your-workspace--letta-telegram-bot-oauth-callback.modal.run
+   ```
+4. Register the callback URL in your Letta OAuth app settings:
+   - The URL format is: `https://<workspace>--letta-telegram-bot-oauth-callback.modal.run`
+   - Find your workspace name in the Modal dashboard
+
+Once configured, users will see a "Sign in with Letta" button when they run `/start` or `/login`.
 
 ## Configuration Reference
 
@@ -232,6 +262,13 @@ Your bot credentials are stored as a Modal secret:
 - Optional: `OPENAI_TRANSCRIBE_MODEL` to override the default (`gpt-4o-mini-transcribe`)
 
 When the OpenAI key is not provided, the bot will still work but will not transcribe audio messages.
+
+**`letta-oauth` secret (optional but recommended):**
+- `LETTA_OAUTH_CLIENT_ID`: OAuth client ID from your Letta OAuth app
+- `LETTA_OAUTH_CLIENT_SECRET`: OAuth client secret
+- `LETTA_OAUTH_CALLBACK_URL`: Full callback URL (must be registered in Letta OAuth app settings)
+
+When OAuth is configured, users can sign in with their Letta account instead of manually entering API keys.
 
 ### Audio Messages
 
@@ -275,6 +312,7 @@ This creates temporary endpoints you can use for testing.
 - `POST /telegram_webhook` - Receives Telegram messages
 - `POST /twilio_webhook` - Receives Twilio SMS/WhatsApp messages
   - Also supports RCS when using a Messaging Service with an attached RCS sender
+- `GET /oauth_callback` - OAuth callback for "Sign in with Letta" flow
 - `GET /health_check` - Service health status
 
 ### Key Features
@@ -297,8 +335,9 @@ This creates temporary endpoints you can use for testing.
 - **`/help`** - Show available commands
 
 **Authentication:**
-- **`/login <api_key>`** - Authenticate with your Letta API key
-- **`/logout`** - Remove your stored credentials  
+- **`/login`** - Sign in with your Letta account (OAuth)
+- **`/login <api_key>`** - Authenticate with API key (legacy method)
+- **`/logout`** - Remove your stored credentials
 - **`/status`** - Check your authentication status
 
 **Project Management:**
@@ -356,17 +395,20 @@ This creates temporary endpoints you can use for testing.
 /data/
 ├── users/
 │   └── {telegram_user_id}/
-│       ├── credentials.json    # Encrypted API key + metadata
+│       ├── credentials.json    # Encrypted API key or OAuth tokens + metadata
 │       ├── shortcuts.json      # User's agent shortcuts
 │       └── preferences.json    # User preferences (reasoning visibility, etc.)
-└── chats/
-    └── {chat_id}/
-        ├── agent.json          # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
-        └── project.json        # {"project_id": "...", "project_name": "...", "project_slug": "..."}
+├── chats/
+│   └── {chat_id}/
+│       ├── agent.json          # {"agent_id": "...", "agent_name": "...", "updated_at": "..."}
+│       └── project.json        # {"project_id": "...", "project_name": "...", "project_slug": "..."}
+└── oauth_pending/
+    └── {state}.json            # Temporary OAuth state (expires after 10 minutes)
 ```
 
-- **User credentials** are stored per Telegram user ID with encryption
+- **User credentials** are stored per Telegram user ID with encryption (supports both API keys and OAuth tokens)
 - **Agent selections** are stored per chat ID
+- **OAuth pending states** are temporary and auto-expire
 - This structure provides both security isolation and functionality
 
 ### Message Processing Features
