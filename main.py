@@ -1562,7 +1562,10 @@ def process_message_async(update: dict):
         if has_voice or has_audio:
             try:
                 # Inform user we're transcribing
-                send_telegram_message(chat_id, f"({agent_name} is listening)")
+                preferences = get_user_preferences(user_id)
+                status_enabled = preferences.get("status_messages_enabled", True)  # Default to enabled
+                if status_enabled:
+                    send_telegram_message(chat_id, f"({agent_name} is listening)")
 
                 bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
                 if not bot_token:
@@ -1639,13 +1642,17 @@ def process_message_async(update: dict):
         print(f"Context message: {context_message}")
         
         # Notify user that message was received
-        if has_photo:
-            send_telegram_message(chat_id, f"({agent_name} is looking)")
-        elif has_voice or has_audio:
-            # Already sent a transcription notice above
-            pass
-        else:
-            send_telegram_message(chat_id, "(please wait)")
+        preferences = get_user_preferences(user_id)
+        status_enabled = preferences.get("status_messages_enabled", True)  # Default to enabled
+        
+        if status_enabled:
+            if has_photo:
+                send_telegram_message(chat_id, f"({agent_name} is looking)")
+            elif has_voice or has_audio:
+                # Already sent a transcription notice above
+                pass
+            else:
+                send_telegram_message(chat_id, "(please wait)")
 
         # Process agent response with streaming
         try:
@@ -1688,7 +1695,7 @@ def process_message_async(update: dict):
                             content = getattr(event, 'content', '')
                             if content and content.strip():
                                 # Add agent name prefix to the message
-                                prefixed_content = f"(**{agent_name}** says)\n\n{content}"
+                                prefixed_content = f"({agent_name} says)\n\n{content}"
                                 send_telegram_message(chat_id, prefixed_content)
                                 last_activity = current_time
 
@@ -1699,7 +1706,7 @@ def process_message_async(update: dict):
 
                             if reasoning_enabled:
                                 reasoning_text = getattr(event, 'reasoning', '')
-                                content = f"(**{agent_name}** thought)\n{blockquote_message(reasoning_text)}"
+                                content = f"({agent_name} thought)\n{blockquote_message(reasoning_text)}"
                                 send_telegram_message(chat_id, content)
                                 last_activity = current_time
 
@@ -1720,11 +1727,11 @@ def process_message_async(update: dict):
                                     args_obj = json.loads(arguments)
 
                                     if tool_name == "archival_memory_insert":
-                                        tool_msg = f"(**{agent_name}** remembered)"
+                                        tool_msg = f"({agent_name} remembered)"
                                         tool_msg += f"\n{blockquote_message(args_obj['content'])}"
 
                                     elif tool_name == "archival_memory_search":
-                                        tool_msg = f"(**{agent_name}** searching: {args_obj['query']})"
+                                        tool_msg = f"({agent_name} searching: {args_obj['query']})"
 
                                     #
                                     # Memory modification operations
@@ -1740,7 +1747,7 @@ def process_message_async(update: dict):
                                         block_label = args_obj['label']
                                         insert_line = args_obj['insert_line']
                                         new_str = args_obj['new_str']
-                                        tool_msg = f"(**{agent_name}** updating memory)\n"
+                                        tool_msg = f"({agent_name} updating memory)\n"
                                         tool_msg += f"\n{blockquote_message(new_str)}"
 
                                     # {
@@ -1753,28 +1760,28 @@ def process_message_async(update: dict):
                                         block_label = args_obj['label']
                                         old_str = args_obj['old_str']
                                         new_str = args_obj['new_str']
-                                        tool_msg = f"(**{agent_name}** modifying memory)"
+                                        tool_msg = f"({agent_name} modifying memory)"
                                         tool_msg += f"New:\n{blockquote_message(new_str)}\n"
                                         tool_msg += f"Old:\n{blockquote_message(old_str)}\n"
 
                                     elif tool_name == "run_code":
                                         code = args_obj.get('code', '')
                                         language = args_obj.get('language', 'python')
-                                        tool_msg = f"(**{agent_name}** ran code)"
+                                        tool_msg = f"({agent_name} ran code)"
                                         tool_msg += f"\n```{language}\n{code}\n```"
 
                                     elif tool_name == "web_search":
                                         query = args_obj.get('query', '')
-                                        tool_msg = f"(**{agent_name}** is searching for \"{query}\")"
+                                        tool_msg = f"({agent_name} is searching for \"{query}\")"
 
                                     else:
-                                        tool_msg = f"(**{agent_name}** using tool: {tool_name})"
+                                        tool_msg = f"({agent_name} using tool: {tool_name})"
                                         formatted_args = json.dumps(args_obj, indent=2)
                                         tool_msg += f"\n```json\n{formatted_args}\n```"
 
                                 except Exception as e:
                                     print(f"Error parsing tool arguments: {e}")
-                                    tool_msg = f"(**{agent_name}** using tool: {tool_name})\n```\n{arguments}\n```"
+                                    tool_msg = f"({agent_name} using tool: {tool_name})\n```\n{arguments}\n```"
 
                                 send_telegram_message(chat_id, tool_msg)
                                 last_activity = current_time
@@ -2250,6 +2257,9 @@ def telegram_webhook(update: dict, request: Request):
                 elif message_text.startswith('/reasoning'):
                     handle_reasoning_command(message_text, update, chat_id)
                     return {"ok": True}
+                elif message_text.startswith('/ack'):
+                    handle_ack_command(message_text, update, chat_id)
+                    return {"ok": True}
                 elif message_text.startswith('/blocks'):
                     handle_blocks_command(update, chat_id)
                     return {"ok": True}
@@ -2640,6 +2650,40 @@ def handle_reasoning_command(message: str, update: dict, chat_id: str):
     except Exception as e:
         print(f"Error handling reasoning command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to update reasoning preferences)")
+
+def handle_ack_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /ack command to enable/disable status messages like (please wait)
+    """
+    try:
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+
+        # Parse the command
+        parts = message.split()
+        if len(parts) < 2:
+            send_telegram_message(chat_id, "Usage: /ack enable|disable")
+            return
+
+        action = parts[1].lower()
+
+        # Get current preferences
+        preferences = get_user_preferences(user_id)
+
+        if action == "enable":
+            preferences["status_messages_enabled"] = True
+            save_user_preferences(user_id, preferences)
+            send_telegram_message(chat_id, "(status messages enabled)")
+        elif action == "disable":
+            preferences["status_messages_enabled"] = False
+            save_user_preferences(user_id, preferences)
+            send_telegram_message(chat_id, "(status messages disabled)")
+        else:
+            send_telegram_message(chat_id, "Usage: /ack enable|disable")
+
+    except Exception as e:
+        print(f"Error handling ack command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to update status preferences)")
 
 def handle_refresh_command(update: dict, chat_id: str):
     """
@@ -3248,7 +3292,7 @@ def handle_block_command(message: str, update: dict, chat_id: str):
                 send_telegram_message(chat_id, f"(error: block '{block_label}' is empty)")
                 return
                 
-            response = f"(**{agent_name}** `{block_label}`)\n\n{blockquote_message(block_value)}"
+            response = f"({agent_name} `{block_label}`)\n\n{blockquote_message(block_value)}"
             send_telegram_message(chat_id, response)
             
         except Exception as api_error:
@@ -3289,6 +3333,7 @@ def handle_help_command(chat_id: str):
 /blocks - List memory blocks
 /block <label> - View memory block
 /reasoning enable|disable - Show/hide reasoning messages
+/ack enable|disable - Show/hide status messages
 /clear-preferences - Reset preferences
 /refresh - Update cached agent info
 /help - Show commands
