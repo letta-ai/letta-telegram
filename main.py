@@ -1478,7 +1478,7 @@ def process_message_async(update: dict):
                             if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                                 content = getattr(event, 'content', '')
                                 if content and content.strip():
-                                    prefixed_content = f"(**{agent.name}** says)\n\n{content}"
+                                    prefixed_content = f"({agent.name} says)\n\n{content}"
                                     send_telegram_message(chat_id, prefixed_content)
 
                         return
@@ -1720,6 +1720,10 @@ def process_message_async(update: dict):
                             tool_call = event.tool_call
                             tool_name = tool_call.name
                             arguments = tool_call.arguments
+
+                            # Skip display for ignore/notification tools
+                            if tool_name in ("ignore", "ignore_notification"):
+                                continue
 
                             if arguments and arguments.strip():
                                 try:
@@ -2918,7 +2922,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
                 if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                     content = getattr(event, 'content', '')
                     if content and content.strip():
-                        prefixed_content = f"(**{agent.name}** says)\n\n{content}"
+                        prefixed_content = f"({agent.name} says)\n\n{content}"
                         send_telegram_message(chat_id, prefixed_content)
 
         except Exception as e:
