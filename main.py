@@ -1731,7 +1731,11 @@ def process_message_async(update: dict):
                                         tool_msg += f"\n{blockquote_message(args_obj['content'])}"
 
                                     elif tool_name == "archival_memory_search":
-                                        tool_msg = f"({agent_name} searching: {args_obj['query']})"
+                                        tool_msg = f"({agent_name} searching memories: {args_obj['query']})"
+
+                                    elif tool_name == "conversation_search":
+                                        query = args_obj.get('query', '')
+                                        tool_msg = f"({agent_name} searching conversations: {query})"
 
                                     #
                                     # Memory modification operations
@@ -1763,6 +1767,45 @@ def process_message_async(update: dict):
                                         tool_msg = f"({agent_name} modifying memory)"
                                         tool_msg += f"New:\n{blockquote_message(new_str)}\n"
                                         tool_msg += f"Old:\n{blockquote_message(old_str)}\n"
+
+                                    elif tool_name == "memory":
+                                        # New unified memory tool with subcommands
+                                        command = args_obj.get('command', '')
+                                        
+                                        if command == "str_replace":
+                                            path = args_obj.get('path', '')
+                                            old_str = args_obj.get('old_str', '')
+                                            new_str = args_obj.get('new_str', '')
+                                            tool_msg = f"({agent_name} is forgetting)\n{blockquote_message(old_str)}\n\n"
+                                            tool_msg += f"({agent_name} is remembering)\n{blockquote_message(new_str)}"
+                                        
+                                        elif command == "insert":
+                                            path = args_obj.get('path', '')
+                                            insert_text = args_obj.get('insert_text', '')
+                                            tool_msg = f"({agent_name} is remembering)\n{blockquote_message(insert_text)}"
+                                        
+                                        elif command == "create":
+                                            path = args_obj.get('path', '')
+                                            description = args_obj.get('description', '')
+                                            tool_msg = f"({agent_name} creating memory: {path})"
+                                            if description:
+                                                tool_msg += f"\n{blockquote_message(description)}"
+                                        
+                                        elif command == "delete":
+                                            path = args_obj.get('path', '')
+                                            tool_msg = f"({agent_name} deleting memory: {path})"
+                                        
+                                        elif command == "rename":
+                                            old_path = args_obj.get('old_path', '')
+                                            new_path = args_obj.get('new_path', '')
+                                            if old_path and new_path:
+                                                tool_msg = f"({agent_name} renaming memory: {old_path} -> {new_path})"
+                                            else:
+                                                path = args_obj.get('path', '')
+                                                tool_msg = f"({agent_name} updating memory: {path})"
+                                        
+                                        else:
+                                            tool_msg = f"({agent_name} using memory tool: {command})"
 
                                     elif tool_name == "run_code":
                                         code = args_obj.get('code', '')
