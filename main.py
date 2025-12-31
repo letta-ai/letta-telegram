@@ -19,7 +19,7 @@ image = (
         "requests",
         "pydantic>=2.0",
         "telegramify-markdown",
-        "letta_client",
+        "letta_client<1.0.0",
         "cryptography>=3.4.8",
         "openai>=1.40.0",
         "python-multipart>=0.0.9",
