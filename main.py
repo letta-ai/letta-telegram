@@ -1478,7 +1478,7 @@ def process_message_async(update: dict):
                             if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                                 content = getattr(event, 'content', '')
                                 if content and content.strip():
-                                    prefixed_content = f"({agent.name} says)\n\n{content}"
+                                    prefixed_content = f"({agent.name} says)\n{content}"
                                     send_telegram_message(chat_id, prefixed_content)
 
                         return
@@ -1695,7 +1695,7 @@ def process_message_async(update: dict):
                             content = getattr(event, 'content', '')
                             if content and content.strip():
                                 # Add agent name prefix to the message
-                                prefixed_content = f"({agent_name} says)\n\n{content}"
+                                prefixed_content = f"({agent_name} says)\n{content}"
                                 send_telegram_message(chat_id, prefixed_content)
                                 last_activity = current_time
 
@@ -2922,7 +2922,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
                 if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                     content = getattr(event, 'content', '')
                     if content and content.strip():
-                        prefixed_content = f"({agent.name} says)\n\n{content}"
+                        prefixed_content = f"({agent.name} says)\n{content}"
                         send_telegram_message(chat_id, prefixed_content)
 
         except Exception as e:
@@ -5403,7 +5403,7 @@ def process_twilio_message_async(payload: dict):
                     if content and content.strip():
                         print(f"[Twilio][{corr_id}] Forwarding assistant message len={len(content)}")
                         # For SMS/WhatsApp/RCS, send plain text; Twilio handles segmentation
-                        send_twilio_message(from_num, f"({agent_name} says)\n\n{content}", from_hint=to_num)
+                        send_twilio_message(from_num, f"({agent_name} says)\n{content}", from_hint=to_num)
             except Exception as e:
                 print(f"[Twilio][{corr_id}] Error handling stream event: {e}")
                 continue
