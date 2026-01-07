@@ -582,6 +582,100 @@ def delete_user_credentials(user_id: str) -> bool:
         # Re-raise the exception so it gets tracked by infrastructure
         raise
 
+def store_chat_credentials(chat_id: str, user_id: str, api_key: str, api_url: str = "https://api.letta.com") -> bool:
+    """
+    Store encrypted chat-specific credentials in volume.
+    Uses the user_id for encryption key derivation.
+    """
+    try:
+        print(f"Storing chat-specific credentials for chat {chat_id}")
+        chat_dir = f"/data/chats/{chat_id}"
+        os.makedirs(chat_dir, exist_ok=True)
+
+        encrypted_key = encrypt_api_key(user_id, api_key)
+
+        credentials = {
+            "api_key": encrypted_key,
+            "api_url": api_url,
+            "user_id": user_id,  # Store who set it for decryption
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+
+        credentials_path = f"{chat_dir}/credentials.json"
+        with open(credentials_path, "w") as f:
+            json.dump(credentials, f, indent=2)
+
+        volume.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error storing chat credentials for {chat_id}: {e}")
+        raise
+
+def get_chat_credentials(chat_id: str) -> Dict[str, str]:
+    """
+    Get chat-specific credentials from volume.
+    Returns dict with 'api_key' and 'api_url', or None if not found.
+    """
+    try:
+        volume.reload()
+
+        credentials_path = f"/data/chats/{chat_id}/credentials.json"
+        if not os.path.exists(credentials_path):
+            print(f"No chat credentials file at {credentials_path}")
+            return None
+        
+        print(f"Found chat credentials file at {credentials_path}")
+
+        with open(credentials_path, "r") as f:
+            credentials = json.load(f)
+
+        # Use stored user_id for decryption
+        user_id = credentials.get("user_id")
+        if not user_id:
+            return None
+
+        decrypted_key = decrypt_api_key(user_id, credentials["api_key"])
+        return {
+            "api_key": decrypted_key,
+            "api_url": credentials.get("api_url", "https://api.letta.com")
+        }
+
+    except Exception as e:
+        print(f"Error retrieving chat credentials for {chat_id}: {e}")
+        return None
+
+def delete_chat_credentials(chat_id: str) -> bool:
+    """
+    Delete chat-specific credentials from volume.
+    """
+    try:
+        credentials_path = f"/data/chats/{chat_id}/credentials.json"
+        if os.path.exists(credentials_path):
+            os.remove(credentials_path)
+            volume.commit()
+        return True
+
+    except Exception as e:
+        print(f"Error deleting chat credentials for {chat_id}: {e}")
+        raise
+
+def get_credentials(chat_id: str, user_id: str) -> Dict[str, str]:
+    """
+    Get credentials with fallback: chat-specific first, then user-level.
+    Returns dict with 'api_key' and 'api_url', or None if not found.
+    """
+    # Check for chat-specific credentials first
+    chat_creds = get_chat_credentials(chat_id)
+    if chat_creds:
+        print(f"Using chat-specific credentials for chat {chat_id}")
+        return chat_creds
+    
+    # Fall back to user-level credentials
+    print(f"Using user-level credentials for user {user_id} (no chat-specific creds for {chat_id})")
+    return get_user_credentials(user_id)
+
 def get_letta_client(api_key: str, api_url: str, timeout: float = 30.0):
     """
     Create Letta client with consistent timeout configuration
@@ -1386,11 +1480,11 @@ def process_message_async(update: dict):
         
         print(f"Processing message: {'[IMAGE]' if has_photo else ''}{message_text} from {user_name} (user_id: {user_id}) in chat {chat_id}")
 
-        # Check for user-specific credentials
+        # Check for credentials (chat-specific first, then user-level)
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
@@ -1478,7 +1572,7 @@ def process_message_async(update: dict):
                             if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                                 content = getattr(event, 'content', '')
                                 if content and content.strip():
-                                    prefixed_content = f"({agent.name} says)\n{content}"
+                                    prefixed_content = f"({agent.name} says)\n\n{content}"
                                     send_telegram_message(chat_id, prefixed_content)
 
                         return
@@ -1619,16 +1713,26 @@ def process_message_async(update: dict):
         )
         displayed_text = message_text if message_text else default_media_note
         
+        # Get user's timezone for timestamp
+        from zoneinfo import ZoneInfo
+        user_preferences = get_user_preferences(user_id)
+        user_tz_str = user_preferences.get("timezone", "UTC")
+        try:
+            user_tz = ZoneInfo(user_tz_str)
+        except Exception:
+            user_tz = ZoneInfo("UTC")
+        timestamp = datetime.now(user_tz).strftime('%Y-%m-%dT%H:%M:%S%z')
+        
         # Build context message with optional quoted content
         if quoted_text and quoted_from:
             context_message = (
-                f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n"
+                f"[Message from Telegram user {user_name} at {timestamp}]\n\n"
                 f"[{user_name} is replying to a message from {quoted_from}]\n"
                 f"Original message: {quoted_text}\n\n"
                 f"{user_name}'s reply: {displayed_text}"
             )
         else:
-            context_message = f"[Message from Telegram user {user_name} (chat_id: {chat_id})]\n\n{displayed_text}"
+            context_message = f"[Message from Telegram user {user_name} at {timestamp}]\n\n{displayed_text}"
         
         text_parts.append(context_message)
 
@@ -1675,6 +1779,7 @@ def process_message_async(update: dict):
             start_time = time.time()
             last_activity = time.time()
             timeout_seconds = 120  # 2 minute timeout
+            pending_reasoning = None  # Buffer reasoning to hide if followed by ignore tool
 
             for event in response_stream:
                 current_time = time.time()
@@ -1692,10 +1797,15 @@ def process_message_async(update: dict):
                         message_type = event.message_type
 
                         if message_type == "assistant_message":
+                            # Send any buffered reasoning first
+                            if pending_reasoning:
+                                send_telegram_message(chat_id, pending_reasoning)
+                                pending_reasoning = None
+                            
                             content = getattr(event, 'content', '')
                             if content and content.strip():
                                 # Add agent name prefix to the message
-                                prefixed_content = f"({agent_name} says)\n{content}"
+                                prefixed_content = f"({agent_name} says)\n\n{content}"
                                 send_telegram_message(chat_id, prefixed_content)
                                 last_activity = current_time
 
@@ -1706,9 +1816,8 @@ def process_message_async(update: dict):
 
                             if reasoning_enabled:
                                 reasoning_text = getattr(event, 'reasoning', '')
-                                content = f"({agent_name} thought)\n{blockquote_message(reasoning_text)}"
-                                send_telegram_message(chat_id, content)
-                                last_activity = current_time
+                                # Buffer reasoning - don't send yet, wait to see if next tool is ignore
+                                pending_reasoning = f"({agent_name} thought)\n{blockquote_message(reasoning_text)}"
 
                         elif message_type == "system_alert":
                             alert_message = getattr(event, 'message', '')
@@ -1721,9 +1830,15 @@ def process_message_async(update: dict):
                             tool_name = tool_call.name
                             arguments = tool_call.arguments
 
-                            # Skip display for ignore/notification tools
+                            # Skip display for ignore/notification tools (and their reasoning)
                             if tool_name in ("ignore", "ignore_notification"):
+                                pending_reasoning = None  # Discard buffered reasoning
                                 continue
+                            
+                            # Send any buffered reasoning before showing tool call
+                            if pending_reasoning:
+                                send_telegram_message(chat_id, pending_reasoning)
+                                pending_reasoning = None
 
                             if arguments and arguments.strip():
                                 try:
@@ -1732,7 +1847,7 @@ def process_message_async(update: dict):
 
                                     if tool_name == "archival_memory_insert":
                                         tool_msg = f"({agent_name} remembered)"
-                                        tool_msg += f"\n{blockquote_message(args_obj['content'])}"
+                                        tool_msg += f"\n\n{blockquote_message(args_obj['content'])}"
 
                                     elif tool_name == "archival_memory_search":
                                         tool_msg = f"({agent_name} searching memories: {args_obj['query']})"
@@ -1769,8 +1884,8 @@ def process_message_async(update: dict):
                                         old_str = args_obj['old_str']
                                         new_str = args_obj['new_str']
                                         tool_msg = f"({agent_name} modifying memory)"
-                                        tool_msg += f"New:\n{blockquote_message(new_str)}\n"
-                                        tool_msg += f"Old:\n{blockquote_message(old_str)}\n"
+                                        tool_msg += f"\n\nNew:\n{blockquote_message(new_str)}\n"
+                                        tool_msg += f"\nOld:\n{blockquote_message(old_str)}\n"
 
                                     elif tool_name == "memory":
                                         # New unified memory tool with subcommands
@@ -1780,13 +1895,13 @@ def process_message_async(update: dict):
                                             path = args_obj.get('path', '')
                                             old_str = args_obj.get('old_str', '')
                                             new_str = args_obj.get('new_str', '')
-                                            tool_msg = f"({agent_name} is forgetting)\n{blockquote_message(old_str)}\n\n"
-                                            tool_msg += f"({agent_name} is remembering)\n{blockquote_message(new_str)}"
+                                            tool_msg = f"({agent_name} is forgetting)\n\n{blockquote_message(old_str)}\n\n"
+                                            tool_msg += f"({agent_name} is remembering)\n\n{blockquote_message(new_str)}"
                                         
                                         elif command == "insert":
                                             path = args_obj.get('path', '')
                                             insert_text = args_obj.get('insert_text', '')
-                                            tool_msg = f"({agent_name} is remembering)\n{blockquote_message(insert_text)}"
+                                            tool_msg = f"({agent_name} is remembering)\n\n{blockquote_message(insert_text)}"
                                         
                                         elif command == "create":
                                             path = args_obj.get('path', '')
@@ -1815,7 +1930,7 @@ def process_message_async(update: dict):
                                         code = args_obj.get('code', '')
                                         language = args_obj.get('language', 'python')
                                         tool_msg = f"({agent_name} ran code)"
-                                        tool_msg += f"\n```{language}\n{code}\n```"
+                                        tool_msg += f"\n\n```{language}\n{code}\n```"
 
                                     elif tool_name == "web_search":
                                         query = args_obj.get('query', '')
@@ -1824,11 +1939,11 @@ def process_message_async(update: dict):
                                     else:
                                         tool_msg = f"({agent_name} using tool: {tool_name})"
                                         formatted_args = json.dumps(args_obj, indent=2)
-                                        tool_msg += f"\n```json\n{formatted_args}\n```"
+                                        tool_msg += f"\n\n```json\n{formatted_args}\n```"
 
                                 except Exception as e:
                                     print(f"Error parsing tool arguments: {e}")
-                                    tool_msg = f"({agent_name} using tool: {tool_name})\n```\n{arguments}\n```"
+                                    tool_msg = f"({agent_name} using tool: {tool_name})\n\n```\n{arguments}\n```"
 
                                 send_telegram_message(chat_id, tool_msg)
                                 last_activity = current_time
@@ -1836,6 +1951,11 @@ def process_message_async(update: dict):
                 except Exception as e:
                     print(f"⚠️  Error processing stream event: {e}")
                     continue
+            
+            # Send any remaining buffered reasoning at end of stream
+            if pending_reasoning:
+                send_telegram_message(chat_id, pending_reasoning)
+                pending_reasoning = None
 
         except ApiError as e:
             # Handle Letta API-specific errors with detailed information
@@ -1931,9 +2051,9 @@ def handle_template_selection(template_name: str, user_id: str, chat_id: str):
     try:
         from letta_client import Letta
         
-        # Check for user credentials
+        # Check for credentials (chat-specific first, then user-level)
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             response = "(hmm, need to authenticate first)\n\ndo /login with your api key"
@@ -2272,7 +2392,7 @@ def telegram_webhook(update: dict, request: Request):
                     handle_login_command(message_text, update, chat_id)
                     return {"ok": True}
                 elif message_text.startswith('/logout'):
-                    handle_logout_command(update, chat_id)
+                    handle_logout_command(update, chat_id, message_text)
                     return {"ok": True}
                 elif message_text.startswith('/status'):
                     handle_status_command(update, chat_id)
@@ -2306,6 +2426,9 @@ def telegram_webhook(update: dict, request: Request):
                     return {"ok": True}
                 elif message_text.startswith('/ack'):
                     handle_ack_command(message_text, update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/timezone'):
+                    handle_timezone_command(message_text, update, chat_id)
                     return {"ok": True}
                 elif message_text.startswith('/blocks'):
                     handle_blocks_command(update, chat_id)
@@ -2513,8 +2636,13 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
         except Exception as e:
             print(f"Warning: Could not delete message with API key: {e}")
 
-        # Parse the command: /login <api_key> [api_url]
+        # Parse the command: /login [--chat] <api_key> [api_url]
         parts = message_text.strip().split()
+        
+        # Check for --chat flag (can be anywhere in the command)
+        chat_scope = "--chat" in parts
+        if chat_scope:
+            parts = [p for p in parts if p != "--chat"]
 
         # Check if no API key provided - offer OAuth
         if len(parts) < 2 or not parts[1].startswith("sk-"):
@@ -2551,9 +2679,14 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             send_telegram_message(chat_id, f"❌ {validation_message}\n\nPlease check your API key and try again.")
             return
 
-        # Store the credentials
+        # Store the credentials (chat-scoped or user-scoped)
         try:
-            store_user_credentials(user_id, api_key, api_url)
+            if chat_scope:
+                store_chat_credentials(chat_id, user_id, api_key, api_url)
+                scope_msg = "for this chat"
+            else:
+                store_user_credentials(user_id, api_key, api_url)
+                scope_msg = "for all your chats"
 
             # Auto-assign Default Project if found and user doesn't have a project set
             project_set_message = ""
@@ -2592,7 +2725,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 except Exception as e:
                     print(f"Warning: Could not check for default agent: {e}")
 
-            response = f"(all set. welcome {user_name.lower()})\n\n"
+            response = f"(all set {scope_msg}. welcome {user_name.lower()})\n\n"
             
             # Check if user has agents to offer appropriate next steps
             try:
@@ -2732,6 +2865,66 @@ def handle_ack_command(message: str, update: dict, chat_id: str):
         print(f"Error handling ack command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to update status preferences)")
 
+def handle_timezone_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /timezone command to set user's timezone for message timestamps
+    """
+    try:
+        from zoneinfo import ZoneInfo, available_timezones
+        
+        # Extract user ID from the update
+        user_id = str(update["message"]["from"]["id"])
+
+        # Parse the command
+        parts = message.split(maxsplit=1)
+        
+        # Get current preferences
+        preferences = get_user_preferences(user_id)
+        current_tz = preferences.get("timezone", "UTC")
+        
+        if len(parts) < 2:
+            # Show current timezone and usage
+            send_telegram_message(chat_id, 
+                f"(current timezone: {current_tz})\n\n"
+                f"Usage: /timezone <tz>\n"
+                f"Example: /timezone America/Los_Angeles\n\n"
+                f"Common timezones:\n"
+                f"• America/New_York (EST/EDT)\n"
+                f"• America/Chicago (CST/CDT)\n"
+                f"• America/Denver (MST/MDT)\n"
+                f"• America/Los_Angeles (PST/PDT)\n"
+                f"• Europe/London (GMT/BST)\n"
+                f"• Europe/Paris (CET/CEST)\n"
+                f"• Asia/Tokyo (JST)\n"
+                f"• UTC\n\n"
+                f"[Full list of timezones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)"
+            )
+            return
+
+        timezone_str = parts[1].strip()
+        
+        # Validate timezone
+        try:
+            ZoneInfo(timezone_str)
+        except Exception:
+            send_telegram_message(chat_id, 
+                f"(error: invalid timezone '{timezone_str}')\n\n"
+                f"Use IANA timezone names like 'America/Los_Angeles' or 'UTC'"
+            )
+            return
+        
+        # Save timezone
+        preferences["timezone"] = timezone_str
+        save_user_preferences(user_id, preferences)
+        
+        # Show confirmation with current time in that timezone
+        now = datetime.now(ZoneInfo(timezone_str))
+        send_telegram_message(chat_id, f"(timezone set to {timezone_str})\n\nCurrent time: {now.strftime('%Y-%m-%dT%H:%M:%S%z')}")
+
+    except Exception as e:
+        print(f"Error handling timezone command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to update timezone)")
+
 def handle_refresh_command(update: dict, chat_id: str):
     """
     Handle /refresh command to update cached agent info
@@ -2742,7 +2935,7 @@ def handle_refresh_command(update: dict, chat_id: str):
         
         # Get user credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -2788,14 +2981,33 @@ def handle_refresh_command(update: dict, chat_id: str):
         # Re-raise the exception to preserve call stack in logs
         raise
 
-def handle_logout_command(update: dict, chat_id: str):
+def handle_logout_command(update: dict, chat_id: str, message_text: str = "/logout"):
     """
     Handle /logout command to remove user's stored credentials
+    Supports --chat flag to logout from chat-specific credentials only
     """
     try:
         # Extract user ID from the update
         user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
+        
+        # Check for --chat flag
+        chat_scope = "--chat" in message_text
+
+        if chat_scope:
+            # Delete chat-specific credentials only
+            try:
+                chat_creds = get_chat_credentials(chat_id)
+                if not chat_creds:
+                    send_telegram_message(chat_id, "(no chat-specific credentials found)")
+                    return
+                delete_chat_credentials(chat_id)
+                send_telegram_message(chat_id, "(logged out from this chat)")
+                return
+            except Exception as e:
+                print(f"Error deleting chat credentials: {e}")
+                send_telegram_message(chat_id, "(error: unable to remove chat credentials)")
+                raise
 
         # Check if user has credentials
         try:
@@ -2837,7 +3049,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
 
         # Check authentication
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "❌ **Error accessing your credentials**\n\nPlease try /login first.")
@@ -2922,7 +3134,7 @@ def handle_make_default_agent_command(update: dict, chat_id: str):
                 if hasattr(event, 'message_type') and event.message_type == "assistant_message":
                     content = getattr(event, 'content', '')
                     if content and content.strip():
-                        prefixed_content = f"({agent.name} says)\n{content}"
+                        prefixed_content = f"({agent.name} says)\n\n{content}"
                         send_telegram_message(chat_id, prefixed_content)
 
         except Exception as e:
@@ -2947,7 +3159,7 @@ def handle_template_command(message_text: str, update: dict, chat_id: str):
         user_name = update["message"]["from"].get("username", "Unknown")
         
         # Check authentication
-        user_credentials = get_user_credentials(user_id)
+        user_credentials = get_credentials(chat_id, user_id)
         if not user_credentials:
             send_telegram_message(chat_id, "(you need to /login first)")
             return
@@ -2995,11 +3207,11 @@ def handle_status_command(update: dict, chat_id: str):
         user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
 
-        # Check if user has credentials
+        # Check if user has credentials (chat-specific first, then user-level)
         try:
-            credentials = get_user_credentials(user_id)
+            credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
@@ -3034,11 +3246,11 @@ def handle_start_command(update: dict, chat_id: str):
         user_name = update["message"]["from"].get("username", "Unknown")
         first_name = update["message"]["from"].get("first_name", "")
 
-        # Check if user is already authenticated
+        # Check if user is already authenticated (chat-specific first, then user-level)
         try:
-            credentials = get_user_credentials(user_id)
+            credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
@@ -3110,11 +3322,11 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
 
-        # Check for user-specific credentials
+        # Check for credentials (chat-specific first, then user-level)
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             # Re-raise so infrastructure can track it
             raise
@@ -3123,7 +3335,7 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
             send_telegram_message(chat_id, "(authentication required - use /login to sign in)")
             return
 
-        # Use user-specific credentials
+        # Use credentials
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
 
@@ -3238,7 +3450,7 @@ def handle_blocks_command(update: dict, chat_id: str):
         
         # Get user credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -3305,7 +3517,7 @@ def handle_block_command(message: str, update: dict, chat_id: str):
         
         # Get user credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -3343,18 +3555,19 @@ def handle_block_command(message: str, update: dict, chat_id: str):
             send_telegram_message(chat_id, response)
             
         except Exception as api_error:
-            # Check if it's a "not found" error
+            # Check if it's a "not found" error - don't re-raise for expected errors
             error_msg = str(api_error).lower()
             if "not found" in error_msg or "404" in error_msg:
                 send_telegram_message(chat_id, f"(error: block '{block_label}' not found - use /blocks to see available blocks)")
+                return  # Don't re-raise for expected "not found" errors
             else:
                 send_telegram_message(chat_id, f"(error: unable to fetch block - {str(api_error)[:50]})")
-            raise
+                print(f"Error fetching block: {api_error}")
+                return  # Don't re-raise, we've handled it
             
     except Exception as e:
         print(f"Error handling block command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to view memory block)")
-        raise
 
 def handle_help_command(chat_id: str):
     """
@@ -3381,6 +3594,7 @@ def handle_help_command(chat_id: str):
 /block <label> - View memory block
 /reasoning enable|disable - Show/hide reasoning messages
 /ack enable|disable - Show/hide status messages
+/timezone <tz> - Set your timezone (e.g., America/Los_Angeles)
 /clear-preferences - Reset preferences
 /refresh - Update cached agent info
 /help - Show commands
@@ -3446,11 +3660,11 @@ def handle_agents_command(update: dict, chat_id: str):
         user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
 
-        # Check for user-specific credentials
+        # Check for credentials (chat-specific first, then user-level)
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
@@ -3458,7 +3672,7 @@ def handle_agents_command(update: dict, chat_id: str):
             send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
-        # Use user-specific credentials
+        # Use credentials
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
 
@@ -3550,7 +3764,7 @@ def handle_tool_command(message: str, update: dict, chat_id: str):
 
         # Check for user-specific credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -3683,7 +3897,7 @@ def handle_tool_attach_menu(user_id: str, chat_id: str, page: int = 0):
         
         # Get user credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             send_telegram_message(chat_id, "(need to authenticate first - use /login)")
             return
@@ -3773,7 +3987,7 @@ def handle_tool_detach_menu(user_id: str, chat_id: str):
         
         # Get user credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             send_telegram_message(chat_id, "(need to authenticate first - use /login)")
             return
@@ -4222,7 +4436,7 @@ def handle_shortcut_command(message: str, update: dict, chat_id: str):
 
         # Check for user-specific credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -4287,7 +4501,7 @@ def handle_shortcut_list(user_id: str, chat_id: str):
 
         # Get user credentials to fetch agent details
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
             if not user_credentials:
                 # Fallback to basic display if no credentials
                 response = "(shortcuts)\n\n"
@@ -4441,7 +4655,7 @@ def handle_switch_command(message: str, update: dict, chat_id: str):
 
         # Check for user-specific credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -4547,11 +4761,11 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
         user_id = str(update["message"]["from"]["id"])
         user_name = update["message"]["from"].get("username", "Unknown")
 
-        # Check for user-specific credentials
+        # Check for credentials (chat-specific first, then user-level)
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
-            print(f"Error retrieving credentials for user {user_id}: {cred_error}")
+            print(f"Error retrieving credentials for chat {chat_id} / user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
             raise
 
@@ -4559,7 +4773,7 @@ def handle_projects_command(message: str, update: dict, chat_id: str):
             send_telegram_message(chat_id, "❌ **Authentication Required**\n\nUse /login to sign in with your Letta account.")
             return
 
-        # Use user-specific credentials
+        # Use credentials
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
 
@@ -4665,7 +4879,7 @@ def handle_project_command(message: str, update: dict, chat_id: str):
 
         # Check for user-specific credentials
         try:
-            user_credentials = get_user_credentials(user_id)
+            user_credentials = get_credentials(chat_id, user_id)
         except Exception as cred_error:
             print(f"Error retrieving credentials for user {user_id}: {cred_error}")
             send_telegram_message(chat_id, "(error: unable to access credentials - try /logout then /login)")
@@ -5403,7 +5617,7 @@ def process_twilio_message_async(payload: dict):
                     if content and content.strip():
                         print(f"[Twilio][{corr_id}] Forwarding assistant message len={len(content)}")
                         # For SMS/WhatsApp/RCS, send plain text; Twilio handles segmentation
-                        send_twilio_message(from_num, f"({agent_name} says)\n{content}", from_hint=to_num)
+                        send_twilio_message(from_num, f"({agent_name} says)\n\n{content}", from_hint=to_num)
             except Exception as e:
                 print(f"[Twilio][{corr_id}] Error handling stream event: {e}")
                 continue
