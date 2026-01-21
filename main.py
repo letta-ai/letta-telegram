@@ -37,6 +37,9 @@ SCALEDOWN_WINDOW=300
 # Create persistent volume for chat settings
 volume = modal.Volume.from_name("chat-settings", create_if_missing=True)
 
+# Create Dict for message debouncing (shared state between containers)
+pending_messages = modal.Dict.from_name("pending-messages", create_if_missing=True)
+
 def get_user_encryption_key(user_id: str) -> bytes:
     """
     Generate a unique encryption key per user using PBKDF2
@@ -1406,6 +1409,111 @@ def validate_letta_api_key(api_key: str, api_url: str = "https://api.letta.com")
     except Exception as e:
         return False, f"Connection error: {str(e)}", (None, None, None)
 
+def queue_message_for_debounce(chat_id: str, user_id: str, update: dict, debounce_seconds: int):
+    """
+    Queue a message for debounced processing.
+    Every message spawns a processor - the last one to wake up processes all.
+    """
+    import time
+    
+    current_time = time.time()
+    key = f"chat_{chat_id}"
+    
+    # Get existing pending messages for this chat
+    try:
+        pending = pending_messages.get(key)
+        if pending is None:
+            pending = {"messages": [], "last_message_time": 0}
+    except Exception:
+        pending = {"messages": [], "last_message_time": 0}
+    
+    # Add this message to the queue
+    pending["messages"].append(update)
+    pending["last_message_time"] = current_time
+    pending_messages[key] = pending
+    
+    print(f"Queued message for {chat_id}, now have {len(pending['messages'])} pending")
+    
+    # Always spawn a processor - it will check if it's the "last" one when it wakes
+    print(f"Spawning delayed processor for chat {chat_id} (debounce: {debounce_seconds}s)")
+    process_debounced_messages.spawn(chat_id, user_id, debounce_seconds)
+
+@app.function(
+    image=image,
+    secrets=[
+        modal.Secret.from_name("telegram-bot"),
+        modal.Secret.from_name("openai"),
+        modal.Secret.from_name("letta-oauth"),
+    ],
+    volumes={"/data": volume},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
+def process_debounced_messages(chat_id: str, user_id: str, debounce_seconds: int):
+    """
+    Delayed processor that waits for debounce period, then processes if no new messages.
+    Multiple processors may be spawned - only the last one (after silence) processes.
+    """
+    import time
+    
+    print(f"Processor started for chat {chat_id}, sleeping {debounce_seconds}s")
+    time.sleep(debounce_seconds)
+    
+    key = f"chat_{chat_id}"
+    
+    # Check current state after sleep
+    try:
+        pending = pending_messages.get(key)
+        if pending is None:
+            print(f"No pending messages for chat {chat_id} (already processed)")
+            return
+    except Exception as e:
+        print(f"Error getting pending messages: {e}")
+        return
+    
+    current_time = time.time()
+    time_since_last = current_time - pending.get("last_message_time", 0)
+    
+    # Only process if we're the "last" processor (no new messages during our sleep)
+    if time_since_last < debounce_seconds - 0.5:
+        print(f"Not last processor for {chat_id} (message {time_since_last:.1f}s ago), exiting")
+        return
+    
+    # We're the last one - process all accumulated messages
+    messages = pending.get("messages", [])
+    if not messages:
+        print(f"No messages to process for chat {chat_id}")
+        return
+    
+    print(f"Processing {len(messages)} debounced messages for chat {chat_id}")
+    
+    # Clear the queue BEFORE processing to avoid race conditions
+    try:
+        pending_messages.pop(key)
+    except Exception:
+        pass
+    
+    # Combine all messages into one composite update
+    # Use the last message as the base, but combine all text content with attribution
+    combined_update = messages[-1].copy()
+    combined_update["message"] = combined_update["message"].copy()
+    
+    # Collect all text from messages with user attribution (important for group chats)
+    text_parts = []
+    for msg in messages:
+        if "message" in msg and "text" in msg["message"]:
+            msg_user = msg["message"]["from"].get("username") or msg["message"]["from"].get("first_name", "Unknown")
+            msg_text = msg["message"]["text"]
+            text_parts.append(f"{msg_user}: {msg_text}")
+    
+    if text_parts:
+        # Join with newlines, each line has user attribution
+        combined_update["message"]["text"] = "\n".join(text_parts)
+    
+    print(f"Combined {len(messages)} messages into: {combined_update['message'].get('text', '')[:100]}...")
+    
+    # Process the combined message
+    process_message_async.local(combined_update)
+
 @app.function(
     image=image,
     secrets=[
@@ -2363,6 +2471,7 @@ def telegram_webhook(update: dict, request: Request):
                 return {"ok": True}
             
             chat_id = str(message["chat"]["id"])
+            user_id = str(message["from"]["id"])
             user_name = message["from"].get("username", "Unknown")
             
             # Handle commands only for text messages
@@ -2431,6 +2540,9 @@ def telegram_webhook(update: dict, request: Request):
                 elif message_text.startswith('/ack'):
                     handle_ack_command(message_text, update, chat_id)
                     return {"ok": True}
+                elif message_text.startswith('/debounce'):
+                    handle_debounce_command(message_text, update, chat_id)
+                    return {"ok": True}
                 elif message_text.startswith('/timezone'):
                     handle_timezone_command(message_text, update, chat_id)
                     return {"ok": True}
@@ -2447,12 +2559,20 @@ def telegram_webhook(update: dict, request: Request):
                     handle_debug_command(update, chat_id)
                     return {"ok": True}
                 else:
-                    # Non-command text message - spawn background processing
+                    # Non-command text message - check debounce setting
                     send_telegram_typing(chat_id)
-                    print("Spawning background task for text message")
-                    process_message_async.spawn(update)
+                    
+                    # Check if this chat has debounce enabled
+                    debounce_seconds = get_chat_debounce(chat_id)
+                    
+                    if debounce_seconds > 0:
+                        print(f"Queuing text message for debounce ({debounce_seconds}s)")
+                        queue_message_for_debounce(chat_id, user_id, update, debounce_seconds)
+                    else:
+                        print("Spawning background task for text message")
+                        process_message_async.spawn(update)
             else:
-                # Media message (photo/audio/voice) - spawn background processing
+                # Media message (photo/audio/voice) - check debounce setting
                 if has_photo:
                     print(f"Received photo from {user_name} in chat {chat_id}")
                 elif has_voice:
@@ -2460,8 +2580,16 @@ def telegram_webhook(update: dict, request: Request):
                 elif has_audio:
                     print(f"Received audio file from {user_name} in chat {chat_id}")
                 send_telegram_typing(chat_id)
-                print("Spawning background task for media message")
-                process_message_async.spawn(update)
+                
+                # Check if this chat has debounce enabled
+                debounce_seconds = get_chat_debounce(chat_id)
+                
+                if debounce_seconds > 0:
+                    print(f"Queuing media message for debounce ({debounce_seconds}s)")
+                    queue_message_for_debounce(chat_id, user_id, update, debounce_seconds)
+                else:
+                    print("Spawning background task for media message")
+                    process_message_async.spawn(update)
 
     except Exception as e:
         print(f"Error in webhook handler: {str(e)}")
@@ -2623,6 +2751,40 @@ def delete_chat_project(chat_id: str) -> bool:
         return True
     except Exception as e:
         print(f"Error deleting chat project for {chat_id}: {e}")
+        return False
+
+def get_chat_debounce(chat_id: str) -> int:
+    """
+    Get the debounce setting for a specific chat.
+    Returns debounce_seconds (0 means disabled).
+    """
+    try:
+        volume.reload()
+        debounce_file = f"/data/chats/{chat_id}/debounce.json"
+        if os.path.exists(debounce_file):
+            with open(debounce_file, "r") as f:
+                data = json.load(f)
+                return data.get("debounce_seconds", 0)
+    except Exception as e:
+        print(f"Error reading chat debounce for {chat_id}: {e}")
+    return 0
+
+def set_chat_debounce(chat_id: str, seconds: int) -> bool:
+    """
+    Set the debounce setting for a specific chat.
+    """
+    try:
+        chat_dir = f"/data/chats/{chat_id}"
+        os.makedirs(chat_dir, exist_ok=True)
+        
+        debounce_file = f"{chat_dir}/debounce.json"
+        with open(debounce_file, "w") as f:
+            json.dump({"debounce_seconds": seconds}, f)
+        
+        volume.commit()
+        return True
+    except Exception as e:
+        print(f"Error saving chat debounce for {chat_id}: {e}")
         return False
 
 def get_all_projects(client):
@@ -2932,6 +3094,63 @@ def handle_ack_command(message: str, update: dict, chat_id: str):
     except Exception as e:
         print(f"Error handling ack command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to update status preferences)")
+
+def handle_debounce_command(message: str, update: dict, chat_id: str):
+    """
+    Handle /debounce command to configure message batching delay (per-chat).
+    When enabled, messages are accumulated until N seconds pass without new messages.
+    """
+    try:
+        parts = message.split()
+        current_debounce = get_chat_debounce(chat_id)
+        
+        if len(parts) < 2:
+            # Show current setting
+            if current_debounce == 0:
+                send_telegram_message(chat_id, 
+                    "(debounce: off for this chat)\n\n"
+                    "Messages are processed immediately.\n\n"
+                    "Usage:\n"
+                    "• `/debounce 3` - wait 3 seconds for more messages\n"
+                    "• `/debounce off` - disable (immediate processing)"
+                )
+            else:
+                send_telegram_message(chat_id, 
+                    f"(debounce: {current_debounce} seconds for this chat)\n\n"
+                    f"Messages are batched until {current_debounce}s of silence.\n\n"
+                    "Usage:\n"
+                    "• `/debounce 5` - change to 5 seconds\n"
+                    "• `/debounce off` - disable"
+                )
+            return
+        
+        arg = parts[1].lower()
+        
+        if arg in ("off", "0", "disable"):
+            set_chat_debounce(chat_id, 0)
+            send_telegram_message(chat_id, "(debounce disabled for this chat)")
+        else:
+            try:
+                seconds = int(arg)
+                if seconds < 0:
+                    send_telegram_message(chat_id, "(error: debounce must be 0 or positive)")
+                    return
+                if seconds > 30:
+                    send_telegram_message(chat_id, "(error: max debounce is 30 seconds)")
+                    return
+                
+                set_chat_debounce(chat_id, seconds)
+                
+                if seconds == 0:
+                    send_telegram_message(chat_id, "(debounce disabled for this chat)")
+                else:
+                    send_telegram_message(chat_id, f"(debounce set to {seconds} seconds for this chat)")
+            except ValueError:
+                send_telegram_message(chat_id, "(error: usage is /debounce <seconds> or /debounce off)")
+    
+    except Exception as e:
+        print(f"Error handling debounce command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to update debounce setting)")
 
 def handle_timezone_command(message: str, update: dict, chat_id: str):
     """
@@ -3730,6 +3949,7 @@ def handle_help_command(chat_id: str):
 /block <label> - View memory block
 /reasoning enable|disable - Show/hide reasoning messages
 /ack enable|disable - Show/hide status messages
+/debounce <seconds> - Batch messages (0 = off)
 /timezone <tz> - Set your timezone (e.g., America/Los_Angeles)
 /clear-preferences - Reset preferences
 /refresh - Update cached agent info
