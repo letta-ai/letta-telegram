@@ -937,9 +937,10 @@ def save_user_preferences(user_id: str, preferences: Dict[str, Any]) -> bool:
         print(f"Error saving preferences for user {user_id}: {e}")
         return False
 
-def user_needs_default_agent(client, project_id: str, user_id: str) -> bool:
+def user_needs_default_agent(client, user_id: str) -> bool:
     """
     Check if user needs a default agent (has no agents and hasn't been offered one)
+    Note: Projects are now scoped to API keys, so no project_id filtering needed
     """
     try:
         # Check user preferences
@@ -947,8 +948,8 @@ def user_needs_default_agent(client, project_id: str, user_id: str) -> bool:
         if preferences.get("default_agent_offered", False):
             return False
 
-        # Check if user has any agents in the project
-        agents = client.agents.list(project_id=project_id)
+        # Check if user has any agents (API key determines visibility)
+        agents = client.agents.list()
         return len(agents) == 0
 
     except Exception as e:
@@ -2421,6 +2422,9 @@ def telegram_webhook(update: dict, request: Request):
                 elif message_text.startswith('/clear-preferences'):
                     handle_clear_preferences_command(update, chat_id)
                     return {"ok": True}
+                elif message_text.startswith('/reset'):
+                    handle_reset_command(update, chat_id)
+                    return {"ok": True}
                 elif message_text.startswith('/reasoning'):
                     handle_reasoning_command(message_text, update, chat_id)
                     return {"ok": True}
@@ -2438,6 +2442,9 @@ def telegram_webhook(update: dict, request: Request):
                     return {"ok": True}
                 elif message_text.startswith('/refresh'):
                     handle_refresh_command(update, chat_id)
+                    return {"ok": True}
+                elif message_text.startswith('/debug'):
+                    handle_debug_command(update, chat_id)
                     return {"ok": True}
                 else:
                     # Non-command text message - spawn background processing
@@ -2490,6 +2497,9 @@ def get_chat_agent_info(chat_id: str) -> dict:
     Returns dict with agent_id and agent_name, or None if not found
     """
     try:
+        # Reload volume to get latest data from other containers
+        volume.reload()
+        
         agent_file_path = f"/data/chats/{chat_id}/agent.json"
         if os.path.exists(agent_file_path):
             with open(agent_file_path, "r") as f:
@@ -2537,12 +2547,31 @@ def save_chat_agent(chat_id: str, agent_id: str, agent_name: str):
         print(f"Error saving chat agent for {chat_id}: {e}")
         return False
 
+def delete_chat_agent(chat_id: str) -> bool:
+    """
+    Delete the agent selection for a specific chat from volume storage.
+    Used when user logs out to clear stale account-specific data.
+    """
+    try:
+        agent_file_path = f"/data/chats/{chat_id}/agent.json"
+        if os.path.exists(agent_file_path):
+            os.remove(agent_file_path)
+            volume.commit()
+            print(f"Deleted chat agent for {chat_id}")
+        return True
+    except Exception as e:
+        print(f"Error deleting chat agent for {chat_id}: {e}")
+        return False
+
 def get_chat_project(chat_id: str) -> Dict[str, str]:
     """
     Get the project for a specific chat from volume storage
     Returns dict with project info or None if no project is set
     """
     try:
+        # Reload volume to get latest data from other containers
+        volume.reload()
+        
         project_file_path = f"/data/chats/{chat_id}/project.json"
         if os.path.exists(project_file_path):
             with open(project_file_path, "r") as f:
@@ -2578,6 +2607,22 @@ def save_chat_project(chat_id: str, project_id: str, project_name: str, project_
 
     except Exception as e:
         print(f"Error saving chat project for {chat_id}: {e}")
+        return False
+
+def delete_chat_project(chat_id: str) -> bool:
+    """
+    Delete the project selection for a specific chat from volume storage.
+    Used when user logs out to clear stale account-specific data.
+    """
+    try:
+        project_file_path = f"/data/chats/{chat_id}/project.json"
+        if os.path.exists(project_file_path):
+            os.remove(project_file_path)
+            volume.commit()
+            print(f"Deleted chat project for {chat_id}")
+        return True
+    except Exception as e:
+        print(f"Error deleting chat project for {chat_id}: {e}")
         return False
 
 def get_all_projects(client):
@@ -2688,41 +2733,28 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
                 store_user_credentials(user_id, api_key, api_url)
                 scope_msg = "for all your chats"
 
-            # Auto-assign Default Project if found and user doesn't have a project set
-            project_set_message = ""
-            default_project_id, default_project_name, default_project_slug = default_project_info
-            if default_project_id:
-                try:
-                    # Check if user already has a project set
-                    current_project = get_chat_project(chat_id)
-                    if not current_project:
-                        # Set the Default Project
-                        save_chat_project(chat_id, default_project_id, default_project_name, default_project_slug)
-                        project_set_message = f"📁 Project set to: **{default_project_name}**\n\n"
-                except Exception as e:
-                    print(f"Warning: Could not auto-assign Default Project: {e}")
+            # Note: Projects are now scoped to API keys, no auto-selection needed
 
             # Check if user needs a default agent
             agent_offer_message = ""
-            if default_project_id:
-                try:
-                    client = get_letta_client(api_key, api_url, timeout=60.0)
+            try:
+                client = get_letta_client(api_key, api_url, timeout=60.0)
 
-                    if user_needs_default_agent(client, default_project_id, user_id):
-                        # Offer to create default agent
-                        agent_offer_message = "**Getting started**\n\n"
-                        agent_offer_message += "I can create a helpful AI assistant for you right now. This agent will:\n"
-                        agent_offer_message += "• Help you learn Letta's features\n"
-                        agent_offer_message += "• Search the web and manage memories\n"
-                        agent_offer_message += "• Adapt to your communication style\n\n"
-                        agent_offer_message += "Reply with **'yes'** to create your assistant, or use `/agents` to browse existing ones.\n\n"
+                if user_needs_default_agent(client, user_id):
+                    # Offer to create default agent
+                    agent_offer_message = "**Getting started**\n\n"
+                    agent_offer_message += "I can create a helpful AI assistant for you right now. This agent will:\n"
+                    agent_offer_message += "• Help you learn Letta's features\n"
+                    agent_offer_message += "• Search the web and manage memories\n"
+                    agent_offer_message += "• Adapt to your communication style\n\n"
+                    agent_offer_message += "Reply with **'yes'** to create your assistant, or use `/agents` to browse existing ones.\n\n"
 
-                        # Mark that we offered the default agent
-                        preferences = get_user_preferences(user_id)
-                        preferences["default_agent_offered"] = True
-                        save_user_preferences(user_id, preferences)
+                    # Mark that we offered the default agent
+                    preferences = get_user_preferences(user_id)
+                    preferences["default_agent_offered"] = True
+                    save_user_preferences(user_id, preferences)
 
-                except Exception as e:
+            except Exception as e:
                     print(f"Warning: Could not check for default agent: {e}")
 
             response = f"(all set {scope_msg}. welcome {user_name.lower()})\n\n"
@@ -2730,7 +2762,7 @@ def handle_login_command(message_text: str, update: dict, chat_id: str):
             # Check if user has agents to offer appropriate next steps
             try:
                 client = get_letta_client(api_key, api_url, timeout=60.0)
-                agents = client.agents.list(project_id=default_project_id) if default_project_id else []
+                agents = client.agents.list()  # API key determines visibility
                 
                 if agents and len(agents) > 0:
                     response += "want to pick an agent?\n\n"
@@ -2796,6 +2828,42 @@ def handle_clear_preferences_command(update: dict, chat_id: str):
     except Exception as e:
         print(f"Error clearing preferences: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to clear preferences)")
+
+def handle_reset_command(update: dict, chat_id: str):
+    """
+    Handle /reset command to completely wipe all data for this chat and user.
+    Useful for troubleshooting or switching accounts in group chats.
+    """
+    import shutil
+    
+    try:
+        user_id = str(update["message"]["from"]["id"])
+        
+        deleted_items = []
+        
+        # Delete all chat data
+        chat_dir = f"/data/chats/{chat_id}"
+        if os.path.exists(chat_dir):
+            shutil.rmtree(chat_dir)
+            deleted_items.append("chat data")
+        
+        # Delete all user data
+        user_dir = f"/data/users/{user_id}"
+        if os.path.exists(user_dir):
+            shutil.rmtree(user_dir)
+            deleted_items.append("user data")
+        
+        volume.commit()
+        
+        if deleted_items:
+            send_telegram_message(chat_id, f"(reset complete: cleared {', '.join(deleted_items)})")
+        else:
+            send_telegram_message(chat_id, "(nothing to reset)")
+            
+    except Exception as e:
+        print(f"Error in reset command: {str(e)}")
+        send_telegram_message(chat_id, "(error: unable to reset)")
+        raise
 
 def handle_reasoning_command(message: str, update: dict, chat_id: str):
     """
@@ -2925,6 +2993,67 @@ def handle_timezone_command(message: str, update: dict, chat_id: str):
         print(f"Error handling timezone command: {str(e)}")
         send_telegram_message(chat_id, "(error: unable to update timezone)")
 
+def handle_debug_command(update: dict, chat_id: str):
+    """
+    Handle /debug command to show credential and storage state for troubleshooting
+    """
+    try:
+        user_id = str(update["message"]["from"]["id"])
+        
+        # Force volume refresh to get latest state
+        volume.reload()
+        
+        # Check what credential files exist
+        chat_creds_path = f"/data/chats/{chat_id}/credentials.json"
+        user_creds_path = f"/data/users/{user_id}/credentials.json"
+        chat_creds_exist = os.path.exists(chat_creds_path)
+        user_creds_exist = os.path.exists(user_creds_path)
+        
+        # Check which credentials are actually being used
+        chat_creds = get_chat_credentials(chat_id)
+        user_creds = get_user_credentials(user_id) if not chat_creds else None
+        active_creds = chat_creds or user_creds
+        
+        # Build key preview (first 8 + last 4 chars for identification)
+        if active_creds:
+            key = active_creds.get("api_key", "")
+            key_preview = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "(short key)"
+            api_url = active_creds.get("api_url", "N/A")
+            cred_source = "chat-level" if chat_creds else "user-level"
+        else:
+            key_preview = "None"
+            api_url = "N/A"
+            cred_source = "none"
+        
+        # Check agent/project info
+        agent_info = get_chat_agent_info(chat_id)
+        project_info = get_chat_project(chat_id)
+        
+        msg = f"""(debug info)
+
+IDs:
+• user_id: `{user_id}`
+• chat_id: `{chat_id}`
+
+Credential files:
+• chat-level exists: {chat_creds_exist}
+• user-level exists: {user_creds_exist}
+• active source: {cred_source}
+
+Active credentials:
+• key: `{key_preview}`
+• url: {api_url}
+
+Chat config:
+• agent: {agent_info.get('agent_name', 'None') if agent_info else 'None'}
+• project: {project_info.get('project_name', 'None') if project_info else 'None'}"""
+        
+        send_telegram_message(chat_id, msg)
+        
+    except Exception as e:
+        print(f"Error handling debug command: {str(e)}")
+        send_telegram_message(chat_id, f"(debug error: {str(e)[:100]})")
+
 def handle_refresh_command(update: dict, chat_id: str):
     """
     Handle /refresh command to update cached agent info
@@ -2995,13 +3124,16 @@ def handle_logout_command(update: dict, chat_id: str, message_text: str = "/logo
         chat_scope = "--chat" in message_text
 
         if chat_scope:
-            # Delete chat-specific credentials only
+            # Delete chat-specific credentials and cached data
             try:
                 chat_creds = get_chat_credentials(chat_id)
                 if not chat_creds:
                     send_telegram_message(chat_id, "(no chat-specific credentials found)")
                     return
                 delete_chat_credentials(chat_id)
+                # Also clear stale project/agent selection tied to old account
+                delete_chat_project(chat_id)
+                delete_chat_agent(chat_id)
                 send_telegram_message(chat_id, "(logged out from this chat)")
                 return
             except Exception as e:
@@ -3026,8 +3158,20 @@ def handle_logout_command(update: dict, chat_id: str, message_text: str = "/logo
         try:
             revoke_oauth_token(user_id)
             delete_user_credentials(user_id)
+            
+            # Also clear chat-level project/agent selection (tied to old account)
+            delete_chat_project(chat_id)
+            delete_chat_agent(chat_id)
 
             send_telegram_message(chat_id, "(you've been logged out, goodbye)")
+            
+            # Warn if chat-specific credentials still exist (common source of confusion)
+            try:
+                chat_creds = get_chat_credentials(chat_id)
+                if chat_creds:
+                    send_telegram_message(chat_id, "(note: this chat has separate credentials - use /logout --chat to clear those too)")
+            except Exception:
+                pass  # Don't fail logout if check fails
         except Exception as delete_error:
             print(f"Failed to delete credentials for user {user_id}: {delete_error}")
             send_telegram_message(chat_id, "(error: failed to remove credentials)")
@@ -3338,14 +3482,6 @@ def handle_agent_command(message: str, update: dict, chat_id: str):
         # Use credentials
         letta_api_key = user_credentials["api_key"]
         letta_api_url = user_credentials["api_url"]
-
-        # Get current project for this chat
-        current_project = get_chat_project(chat_id)
-        if not current_project:
-            send_telegram_message(chat_id, "(error: no project configured - use /projects to select one)")
-            return
-
-        project_id = current_project["project_id"]
 
         # Parse the command: /agent [agent_id]
         parts = message.strip().split()
@@ -3677,15 +3813,8 @@ def handle_agents_command(update: dict, chat_id: str):
         letta_api_url = user_credentials["api_url"]
 
         try:
-            # Get current project for this chat
-            current_project = get_chat_project(chat_id)
-            if not current_project:
-                send_telegram_message(chat_id, "❌ **No project set**\n\nUse `/projects` to see available projects and `/project <id>` to select one.")
-                return
-
-            project_id = current_project["project_id"]
-
             # Initialize Letta client to list agents
+            # Note: Projects are now scoped to API keys, so no project_id filtering needed
             client = get_letta_client(letta_api_key, letta_api_url, timeout=60.0)
 
             # Get current agent info for this chat
@@ -3697,8 +3826,8 @@ def handle_agents_command(update: dict, chat_id: str):
                 current_agent_id = current_agent_info["agent_id"]
                 current_agent_name = current_agent_info["agent_name"]
 
-            # List all available agents in the current project
-            agents = client.agents.list(project_id=project_id)
+            # List all available agents (API key determines visibility)
+            agents = client.agents.list()
 
             if not agents:
                 send_telegram_message(chat_id, "**Available Agents:**\n\nNo agents available. Create an agent first.")
