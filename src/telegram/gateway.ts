@@ -239,12 +239,43 @@ export async function startTelegram(
       log.error("Telegram dispatch failed", { route: routeKeyString(route), err: String(error) });
     }
   }
+  /** A group became a supergroup: carry its conversations over to the new chat id. */
+  function migrate(m: TelegramMessageLike) {
+    const from = String(m.chat.id),
+      to = String(m.migrate_to_chat_id);
+    // Only groups the bot already serves; anyone can create and migrate a group.
+    if (config.GROUP_POLICY === "off") return;
+    if (config.GROUP_POLICY === "allowlist" && !config.TELEGRAM_GROUP_IDS.includes(from)) return;
+    store.rename(from, to);
+    log.info("Telegram group migrated to a supergroup", { from, to });
+    if (config.GROUP_POLICY === "allowlist" && !config.TELEGRAM_GROUP_IDS.includes(to))
+      log.warn("add the new supergroup id to TELEGRAM_GROUP_IDS, or the bot will ignore it", { to });
+    if (config.TELEGRAM_OPEN_CHAT_IDS.includes(from) && !config.TELEGRAM_OPEN_CHAT_IDS.includes(to))
+      log.warn("add the new supergroup id to TELEGRAM_OPEN_CHAT_IDS to keep it open", { to });
+  }
+  /**
+   * grammY's polling loop waits for each handler, so downloads and
+   * transcription run off the loop. A per-chat chain keeps each chat in order.
+   */
+  const chains = new Map<string, Promise<void>>();
+  function enqueue(chatId: string, messages: any[]) {
+    const run = (chains.get(chatId) ?? Promise.resolve())
+      .then(() => processMessages(messages))
+      .catch((error) => log.error("Telegram message handling failed", { chat: chatId, err: String(error) }));
+    chains.set(chatId, run);
+    void run.finally(() => {
+      if (chains.get(chatId) === run) chains.delete(chatId);
+    });
+  }
   async function processMessages(messages: any[]) {
     if (stopping) return;
     messages = messages.filter((item) => dedupe.firstTime(`${item.chat.id}:${item.message_id}`));
     const m = messages[0] as TelegramMessageLike;
     if (!m) return;
-    const id = `${m.chat.id}:${m.message_id}`;
+    if (m.migrate_to_chat_id) {
+      migrate(m);
+      return;
+    }
     const denial = surfaceDenial(config, m);
     if (denial) {
       if (m.chat.type === "private" && m.from) {
@@ -257,11 +288,6 @@ export async function startTelegram(
             .catch(() => {});
         }
       }
-      return;
-    }
-    if (m.migrate_to_chat_id) {
-      store.rename(String(m.chat.id), String(m.migrate_to_chat_id));
-      log.info("Telegram group migrated", { from: String(m.chat.id), to: String(m.migrate_to_chat_id) });
       return;
     }
     const decision = gate(config, m, String(me.id), me.username);
@@ -317,19 +343,19 @@ export async function startTelegram(
         old.items.push(m);
         old.timer = setTimeout(() => {
           albums.delete(key);
-          void processMessages(old.items);
+          enqueue(String(m.chat.id), old.items);
         }, 300);
       } else {
         const entry = { items: [m], timer: setTimeout(() => {}, 300) };
         entry.timer = setTimeout(() => {
           albums.delete(key);
-          void processMessages(entry.items);
+          enqueue(String(m.chat.id), entry.items);
         }, 300);
         albums.set(key, entry);
       }
       return;
     }
-    await processMessages([m]);
+    enqueue(String(m.chat.id), [m]);
   });
   bot.on("callback_query:data", async (ctx) => {
     const q = ctx.callbackQuery,

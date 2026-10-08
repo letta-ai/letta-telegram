@@ -92,7 +92,11 @@ export function createRenderer(
   let toolMessage: number | null = null,
     toolSync = Promise.resolve(),
     reasoningMessage: number | null = null,
-    reasoningTimer: ReturnType<typeof setTimeout> | null = null;
+    reasoningTimer: ReturnType<typeof setTimeout> | null = null,
+    // In-flight syncs; `done` awaits them so it never races a first send.
+    streamSync: Promise<void> = Promise.resolve(),
+    reasoningSync: Promise<void> = Promise.resolve(),
+    events: Promise<void> = Promise.resolve();
   const opts = () => (route.topicId ? { message_thread_id: Number(route.topicId) } : {});
   const stopTyping = () => {
     if (typing) clearInterval(typing);
@@ -149,7 +153,7 @@ export function createRenderer(
     const wait = Math.max(0, lastEdit + config.STREAM_EDIT_INTERVAL_MS - Date.now());
     streamTimer = setTimeout(() => {
       streamTimer = null;
-      if (!ended) void syncStream();
+      if (!ended) streamSync = streamSync.then(syncStream).catch(() => {});
     }, wait);
   };
   const syncReasoning = async () => {
@@ -165,12 +169,12 @@ export function createRenderer(
     reasoningTimer = setTimeout(
       () => {
         reasoningTimer = null;
-        if (!ended) void syncReasoning();
+        if (!ended) reasoningSync = reasoningSync.then(syncReasoning).catch(() => {});
       },
       Math.max(0, config.STREAM_EDIT_INTERVAL_MS),
     );
   };
-  return async (event: TurnEvent): Promise<void> => {
+  const handle = async (event: TurnEvent): Promise<void> => {
     try {
       switch (event.kind) {
         case "started":
@@ -217,6 +221,8 @@ export function createRenderer(
           stopTyping();
           if (streamTimer) clearTimeout(streamTimer);
           if (reasoningTimer) clearTimeout(reasoningTimer);
+          await streamSync;
+          await reasoningSync;
           if (mode !== "tool") {
             if (config.STREAM_EDITS && streamMessages.length > 0) await syncStream();
             else if (text) await sendFormatted(api, route, text, trigger);
@@ -246,4 +252,6 @@ export function createRenderer(
       log.warn("Telegram renderer failed", { chat: route.chatId, err: String(error) });
     }
   };
+  // Apply events strictly in arrival order.
+  return (event: TurnEvent): Promise<void> => (events = events.then(() => handle(event)));
 }

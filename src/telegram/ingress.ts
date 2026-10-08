@@ -1,5 +1,6 @@
 import type { Config } from "../config.ts";
 import type { InboundMessage, ReplyTarget, RouteKey } from "../types.ts";
+import { COMMANDS } from "./commands.ts";
 
 export interface TelegramMessageLike {
   message_id: number;
@@ -16,6 +17,7 @@ export interface TelegramMessageLike {
   caption_entities?: TelegramMessageLike["entities"];
   reply_to_message?: TelegramMessageLike;
   migrate_to_chat_id?: number;
+  forum_topic_created?: unknown;
 }
 export type GateDecision =
   { accept: true; route: RouteKey; mentioned: boolean } | { accept: false; reason: string; refuse?: boolean };
@@ -54,6 +56,33 @@ export function surfaceDenial(c: Config, m: TelegramMessageLike): string | null 
 function entityText(text: string, e: { offset: number; length: number }) {
   return text.slice(e.offset, e.offset + e.length);
 }
+/**
+ * The message this one replies to, ignoring the implicit reply Telegram adds
+ * to every forum-topic message (it points at the topic's creation message).
+ */
+export function explicitReply(m: TelegramMessageLike): TelegramMessageLike | undefined {
+  const r = m.reply_to_message;
+  if (!r) return undefined;
+  if (r.forum_topic_created !== undefined) return undefined;
+  if (m.is_topic_message && r.message_id === m.message_thread_id) return undefined;
+  return r;
+}
+
+const OWN_COMMANDS = new Set(COMMANDS.map((c) => c.command));
+
+/**
+ * A leading bot command addressed to this bot: `/anything@thisbot`, or a bare
+ * `/command` that this bot defines. Bare unknown commands belong to other bots.
+ */
+export function commandForBot(text: string, username: string): { name: string; explicit: boolean } | null {
+  const match = /^\/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?:\s|$)/i.exec(text);
+  if (!match) return null;
+  const name = match[1]!.toLowerCase();
+  const target = match[2]?.toLowerCase();
+  if (target) return target === username.toLowerCase() ? { name, explicit: true } : null;
+  return OWN_COMMANDS.has(name) ? { name, explicit: false } : null;
+}
+
 export function addressed(m: TelegramMessageLike, botId: string, username: string): boolean {
   const text = m.text ?? m.caption ?? "";
   const entities = m.entities ?? m.caption_entities ?? [];
@@ -64,11 +93,8 @@ export function addressed(m: TelegramMessageLike, botId: string, username: strin
   )
     return true;
   if (entities.some((e) => e.type === "text_mention" && String(e.user?.id) === botId)) return true;
-  if (String(m.reply_to_message?.from?.id ?? "") === botId) return true;
-  return (
-    /^\/[a-z0-9_]+(?:@([a-z0-9_]+))?(?:\s|$)/i.test(text) &&
-    (!RegExp.$1 || RegExp.$1.toLowerCase() === username.toLowerCase())
-  );
+  if (String(explicitReply(m)?.from?.id ?? "") === botId) return true;
+  return commandForBot(text, username) !== null;
 }
 export function gate(c: Config, m: TelegramMessageLike, botId: string, username: string): GateDecision {
   if (!m.from || m.from.is_bot || String(m.from.id) === botId) return { accept: false, reason: "bot" };
@@ -92,7 +118,7 @@ export function stripMention(
   return result.trim();
 }
 function replyTarget(m: TelegramMessageLike, botId: string): ReplyTarget | undefined {
-  const r = m.reply_to_message;
+  const r = explicitReply(m);
   if (!r?.from) return undefined;
   let text = (r.text ?? r.caption ?? mediaPlaceholder(r)).replace(/\s+/g, " ").slice(0, 600);
   if (m.quote?.text) text = `Quote: ${m.quote.text.slice(0, 300)}\n${text}`;
@@ -130,7 +156,7 @@ export function normalizeText(
     authorIsBot: false,
     text: stripMention(raw, m.entities ?? m.caption_entities, username),
     createdAt: new Date(m.date * 1000).toISOString(),
-    ...(m.reply_to_message ? { replyToMessageId: String(m.reply_to_message.message_id) } : {}),
+    ...(explicitReply(m) ? { replyToMessageId: String(explicitReply(m)!.message_id) } : {}),
     ...(reply ? { replyTo: reply } : {}),
     images: [],
     files: [],

@@ -83,20 +83,6 @@ export class ApprovalManager {
         .then((message) => {
           p.message = message.message_id;
           if (p.terminal) void this.edit(p, p.terminal);
-          else
-            void this.api
-              .editMessageText(req.route.chatId, message.message_id, this.render(req, null, false), {
-                parse_mode: "HTML",
-                reply_markup: {
-                  inline_keyboard: [
-                    [
-                      { text: "Approve", callback_data: `ap:${id}:y` },
-                      { text: "Deny", callback_data: `ap:${id}:n` },
-                    ],
-                  ],
-                },
-              })
-              .catch(() => {});
         })
         .catch((error) => {
           log.warn("approval message send failed", { tool: req.toolName, err: String(error) });

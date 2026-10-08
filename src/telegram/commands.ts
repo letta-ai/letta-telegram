@@ -7,9 +7,12 @@ export const COMMANDS = [
   { command: "cancel", description: "Cancel the current turn" },
   { command: "status", description: "Show conversation status" },
 ];
-export function parseCommand(text: string, username: string) {
-  const m = /^\/([a-z]+)(?:@([a-z0-9_]+))?(?:\s|$)/i.exec(text);
-  return m && (!m[2] || m[2].toLowerCase() === username.toLowerCase()) ? m[1]!.toLowerCase() : null;
+/** One of this bot's own commands, or null. Other slash text goes to the agent. */
+export function parseCommand(text: string, username: string): string | null {
+  const m = /^\/([a-z0-9_]+)(?:@([a-z0-9_]+))?(?:\s|$)/i.exec(text);
+  if (!m || (m[2] && m[2].toLowerCase() !== username.toLowerCase())) return null;
+  const name = m[1]!.toLowerCase();
+  return COMMANDS.some((c) => c.command === name) ? name : null;
 }
 export async function runCommand(
   command: string,
