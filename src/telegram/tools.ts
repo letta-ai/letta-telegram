@@ -17,6 +17,12 @@ const textResult = (text: string, isError = false) => ({ content: [{ type: "text
 const errResult = (error: unknown) => textResult(error instanceof Error ? error.message : String(error), true);
 function args(value: unknown): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid tool arguments."); return value as Record<string, unknown>; }
 function str(a: Record<string, unknown>, key: string, required = false): string | undefined { const v=a[key]; if (v === undefined && !required) return; if (typeof v !== "string" || (required && !v)) throw new Error(`Invalid ${key}.`); return v; }
+function photoMime(data: Uint8Array): string | null {
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
+  if (String.fromCharCode(...data.slice(0, 4)) === "RIFF" && String.fromCharCode(...data.slice(8, 12)) === "WEBP") return "image/webp";
+  return null;
+}
 
 export function createTelegramToolFactory(deps: { api: ToolApi; config: Config; makeInputFile(data: Uint8Array, name: string): unknown }): ToolFactory {
   return (initialRoute, currentTurn, sandbox): AnyAgentTool[] => {
@@ -35,7 +41,7 @@ export function createTelegramToolFactory(deps: { api: ToolApi; config: Config; 
     if (sandbox) tools.push({
       name:"telegram_send_file",label:"Send file to Telegram",description:"Send a file from /root/downloads to this Telegram chat.",
       parameters:{type:"object",properties:{description:DESCRIPTION_PARAM,path:{type:"string"},caption:{type:"string"}},required:["description","path"],additionalProperties:false},
-      async execute(_id,raw){try{const a=args(raw),p=str(a,"path",true)!,caption=str(a,"caption");const normalized=path.normalize(p);if(!path.isAbsolute(p)||normalized!==p||!p.startsWith("/root/downloads/")||path.basename(p)==="")throw new Error("File path must be a normalized path under /root/downloads/.");const data=await sandbox.downloadFile(p);if(data.byteLength>deps.config.MAX_FILE_BYTES)throw new Error(`File is too large (maximum ${deps.config.MAX_FILE_BYTES} bytes).`);const r=route(),file=deps.makeInputFile(data,path.basename(p));const options={...(caption?{caption}:{}) ,...(r.topicId?{message_thread_id:Number(r.topicId)}:{})};if(/\.(png|jpe?g|webp)$/i.test(p))await deps.api.sendPhoto(r.chatId,file,options);else await deps.api.sendDocument(r.chatId,file,options);return textResult("File sent.")}catch(e){return errResult(e)}},
+      async execute(_id,raw){try{const a=args(raw),p=str(a,"path",true)!,caption=str(a,"caption");const normalized=path.normalize(p);if(!path.isAbsolute(p)||normalized!==p||!p.startsWith("/root/downloads/")||path.basename(p)==="")throw new Error("File path must be a normalized path under /root/downloads/.");const data=await sandbox.downloadFile(p);if(data.byteLength>deps.config.MAX_FILE_BYTES)throw new Error(`File is too large (maximum ${deps.config.MAX_FILE_BYTES} bytes).`);const r=route(),file=deps.makeInputFile(data,path.basename(p));const options={...(caption?{caption}:{}) ,...(r.topicId?{message_thread_id:Number(r.topicId)}:{})};if(photoMime(data))await deps.api.sendPhoto(r.chatId,file,options);else await deps.api.sendDocument(r.chatId,file,options);return textResult("File sent.")}catch(e){return errResult(e)}},
     });
     const toolMode=replyModeFor(deps.config,initialRoute)==="tool";
     return tools.filter(t=>t.name==="telegram_send_message"?toolMode:t.name==="telegram_send_file"||deps.config.ENABLE_TELEGRAM_TOOLS);
