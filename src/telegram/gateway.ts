@@ -37,6 +37,7 @@ interface Pending {
   inbound: InboundMessage;
 }
 const refusalAt = new Map<string, number>();
+const ignoredGroups = new Set<string>();
 
 export function createTelegramBot(token: string): Bot {
   const bot = new Bot(token);
@@ -287,6 +288,13 @@ export async function startTelegram(
             .sendMessage(m.chat.id, `Sorry, user ${uid} is not allowed to use this bot.`)
             .catch(() => {});
         }
+      } else if (denial === "group-not-allowlisted" && !ignoredGroups.has(String(m.chat.id))) {
+        // Once per group, so the operator can find the id to allowlist.
+        ignoredGroups.add(String(m.chat.id));
+        log.info("ignoring a group that is not in TELEGRAM_GROUP_IDS", {
+          chat: String(m.chat.id),
+          title: m.chat.title,
+        });
       }
       return;
     }

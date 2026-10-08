@@ -109,3 +109,18 @@ describe("config", () => {
     expect(c.STREAM_EDITS).toBe(false);
   });
 });
+
+test("empty environment values count as unset", () => {
+  const c = loadConfig({
+    TELEGRAM_BOT_TOKEN: "t",
+    LETTA_API_KEY: "k",
+    LETTA_AGENT_ID: "agent-1",
+    LETTA_BASE_URL: "",
+    TOOLSET_BASE: "",
+    TRANSCRIBE_BASE_URL: " ",
+    DEBOUNCE_MS: "",
+  });
+  expect(c.LETTA_BASE_URL).toBeUndefined();
+  expect(c.TOOLSET_BASE).toBeUndefined();
+  expect(c.DEBOUNCE_MS).toBe(1500);
+});

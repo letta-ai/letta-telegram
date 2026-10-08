@@ -1,6 +1,6 @@
 # Tools and permissions
 
-The bot exposes listener-owned tools only when they are useful on the current route:
+The bot gives the agent Telegram tools that act only in the current chat or topic:
 
 - `telegram_react(message_id, emoji)` accepts Telegram's supported reaction emoji.
 - `telegram_send_file(path, caption?)` reads a normalized path under `/root/downloads` from the managed sandbox and sends a photo or document.
