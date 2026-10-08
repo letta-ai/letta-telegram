@@ -1,3 +1,44 @@
-import{describe,expect,test}from"bun:test";import{markdownToHtml,splitMarkdown}from"../src/telegram/format.ts";
-const balanced=(s:string)=>{for(const tag of["b","i","s","code","pre","a","blockquote"]){expect((s.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`,"g"))??[]).length).toBe((s.match(new RegExp(`</${tag}>`,"g"))??[]).length)}};
-describe("Telegram HTML formatting",()=>{test("escapes HTML and converts supported Markdown",()=>{const html=markdownToHtml("# Hi <x> & **bold** *it* ~~no~~ `a<b`\n> quote\n[site](https://x.test/?a=1&b=2)");expect(html).toContain("&lt;x&gt; &amp;");expect(html).toContain("<b>bold</b>");expect(html).toContain("<i>it</i>");expect(html).toContain("<code>a&lt;b</code>");expect(html).toContain("<blockquote>quote</blockquote>");expect(html).toContain('<a href="https://x.test/?a=1&amp;b=2">site</a>');balanced(html)});test("code fences escape content and preserve language",()=>{const html=markdownToHtml("```ts\nconst x = '<tag>';\n```");expect(html).toContain('<pre><code class="language-ts">');expect(html).toContain("&lt;tag&gt;");balanced(html)});test("rejects unsafe links and never emits user tags",()=>{const html=markdownToHtml("[x](javascript:alert(1)) </b><i>owned");expect(html).not.toContain("href=");expect(html).toContain("&lt;/b&gt;&lt;i&gt;");balanced(html)});test("splits under limits with independently balanced fences",()=>{const chunks=splitMarkdown(`\`\`\`js\n${"x < y\n".repeat(1000)}\`\`\``);expect(chunks.length).toBeGreaterThan(1);for(const c of chunks){expect(markdownToHtml(c).length).toBeLessThanOrEqual(4096);balanced(markdownToHtml(c));expect((c.match(/```/g)??[]).length%2).toBe(0)}})});
+import { describe, expect, test } from "bun:test";
+import { markdownToHtml, splitMarkdown } from "../src/telegram/format.ts";
+const balanced = (s: string) => {
+  for (const tag of ["b", "i", "s", "code", "pre", "a", "blockquote"]) {
+    expect((s.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "g")) ?? []).length).toBe(
+      (s.match(new RegExp(`</${tag}>`, "g")) ?? []).length,
+    );
+  }
+};
+describe("Telegram HTML formatting", () => {
+  test("escapes HTML and converts supported Markdown", () => {
+    const html = markdownToHtml(
+      "# Hi <x> & **bold** *it* ~~no~~ `a<b`\n> quote\n[site](https://x.test/?a=1&b=2)",
+    );
+    expect(html).toContain("&lt;x&gt; &amp;");
+    expect(html).toContain("<b>bold</b>");
+    expect(html).toContain("<i>it</i>");
+    expect(html).toContain("<code>a&lt;b</code>");
+    expect(html).toContain("<blockquote>quote</blockquote>");
+    expect(html).toContain('<a href="https://x.test/?a=1&amp;b=2">site</a>');
+    balanced(html);
+  });
+  test("code fences escape content and preserve language", () => {
+    const html = markdownToHtml("```ts\nconst x = '<tag>';\n```");
+    expect(html).toContain('<pre><code class="language-ts">');
+    expect(html).toContain("&lt;tag&gt;");
+    balanced(html);
+  });
+  test("rejects unsafe links and never emits user tags", () => {
+    const html = markdownToHtml("[x](javascript:alert(1)) </b><i>owned");
+    expect(html).not.toContain("href=");
+    expect(html).toContain("&lt;/b&gt;&lt;i&gt;");
+    balanced(html);
+  });
+  test("splits under limits with independently balanced fences", () => {
+    const chunks = splitMarkdown(`\`\`\`js\n${"x < y\n".repeat(1000)}\`\`\``);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(markdownToHtml(c).length).toBeLessThanOrEqual(4096);
+      balanced(markdownToHtml(c));
+      expect((c.match(/```/g) ?? []).length % 2).toBe(0);
+    }
+  });
+});
