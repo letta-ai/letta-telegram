@@ -1,0 +1,31 @@
+# Install as /etc/systemd/system/letta-telegram.service
+[Unit]
+Description=Letta Telegram bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=letta-telegram
+Group=letta-telegram
+WorkingDirectory=/opt/letta-telegram
+EnvironmentFile=/etc/letta-telegram.env
+Environment=NODE_ENV=production
+StateDirectory=letta-telegram
+ExecStart=/usr/bin/env DATA_DIR=/var/lib/letta-telegram /usr/local/bin/bun run src/index.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
