@@ -138,7 +138,7 @@ function media(
     if (x && type)
       return {
         fileId: x.file_id,
-        name: x.file_name ?? `${kind}-${m.message_id}${type === "image/webp" ? ".webp" : ""}`,
+        name: x.file_name ?? `${kind}-${m.message_id}${type === "image/webp" ? ".webp" : voice ? ".ogg" : ""}`,
         type,
         size: x.file_size ?? 0,
         image,
@@ -161,8 +161,23 @@ async function normalize(
     item = media(m, config.MAX_IMAGE_BYTES);
   if (!item) return inbound;
   const cap = item.image ? config.MAX_IMAGE_BYTES : config.MAX_FILE_BYTES;
-  if (item.size && item.size > cap) return inbound;
-  const got = await download(api, token, item.fileId, cap, config.DOWNLOAD_TIMEOUT_SECONDS * 1000);
+  // An attachment without data reaches the agent with no path, so it knows a file was sent but is unavailable.
+  const unavailable = () => {
+    inbound.files.push({ name: item.name, contentType: item.type, size: item.size });
+    return inbound;
+  };
+  if (item.size && item.size > cap) return unavailable();
+  let got: { data: Blob; path: string };
+  try {
+    got = await download(api, token, item.fileId, cap, config.DOWNLOAD_TIMEOUT_SECONDS * 1000);
+  } catch (error) {
+    log.warn("Telegram attachment download failed", {
+      chat: String(m.chat.id),
+      message: String(m.message_id),
+      err: String(error),
+    });
+    return unavailable();
+  }
   const bytes = new Uint8Array(await got.data.arrayBuffer());
   if (item.image) {
     inbound.images.push({
@@ -268,6 +283,21 @@ export async function startTelegram(
       if (chains.get(chatId) === run) chains.delete(chatId);
     });
   }
+  async function runAndReply(command: string, route: RouteKey, m: TelegramMessageLike) {
+    const response = await runCommand(command, route, String(m.from!.id), config, bridge);
+    // The turn these prompts belonged to is gone.
+    if (command === "cancel" || command === "new") await approvals.cancelRoute(route);
+    await sendFormatted(api, route, response, String(m.message_id));
+  }
+  /** Commands skip the per-chat chain, so /cancel and /new never wait behind media intake. */
+  async function tryCommand(m: TelegramMessageLike): Promise<boolean> {
+    const command = parseCommand(m.text ?? m.caption ?? "", me.username);
+    if (!command || stopping) return false;
+    const decision = gate(config, m, String(me.id), me.username);
+    if (!decision.accept) return false;
+    if (dedupe.firstTime(`${m.chat.id}:${m.message_id}`)) await runAndReply(command, decision.route, m);
+    return true;
+  }
   async function processMessages(messages: any[]) {
     if (stopping) return;
     messages = messages.filter((item) => dedupe.firstTime(`${item.chat.id}:${item.message_id}`));
@@ -302,8 +332,7 @@ export async function startTelegram(
     if (!decision.accept) return;
     const command = parseCommand(m.text ?? m.caption ?? "", me.username);
     if (command) {
-      const response = await runCommand(command, decision.route, String(m.from!.id), config, bridge);
-      await sendFormatted(api, decision.route, response, String(m.message_id));
+      await runAndReply(command, decision.route, m);
       return;
     }
     try {
@@ -324,7 +353,8 @@ export async function startTelegram(
       if (!normalized.some((x) => x.text || x.images.length || x.files.length)) return;
       if (normalized.length > 1) {
         const pending = normalized.map((inbound) => ({ route: inbound.route, inbound }));
-        await dispatch(pending[0]!.route, pending);
+        // Not awaited: the turn must not hold this chat's chain.
+        void dispatch(pending[0]!.route, pending);
       } else {
         const inbound = normalized[0]!;
         debouncer.push(`${routeKeyString(inbound.route)}:${inbound.authorId}`, {
@@ -363,6 +393,7 @@ export async function startTelegram(
       }
       return;
     }
+    if (await tryCommand(m)) return;
     enqueue(String(m.chat.id), [m]);
   });
   bot.on("callback_query:data", async (ctx) => {
@@ -387,7 +418,10 @@ export async function startTelegram(
   });
   void bot.start({ allowed_updates: ["message", "callback_query"] }).catch((error) => {
     ready = false;
-    if (!stopping) log.error("Telegram polling stopped", { err: String(error) });
+    if (stopping) return;
+    log.error("Telegram polling stopped", { err: String(error) });
+    // Nothing restarts polling in-process; exit so the supervisor does.
+    process.exit(1);
   });
   return {
     bot,

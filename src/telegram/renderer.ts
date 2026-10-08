@@ -82,6 +82,7 @@ export function createRenderer(
   mode: ReplyMode = "relay",
 ) {
   let text = "",
+    lastMessageId: string | undefined,
     reasoning = "",
     typing: ReturnType<typeof setInterval> | null = null,
     streamTimer: ReturnType<typeof setTimeout> | null = null,
@@ -185,6 +186,9 @@ export function createRenderer(
           }
           break;
         case "assistant_delta":
+          // A new assistant message (such as after a tool call) starts a new paragraph.
+          if (text && event.messageId && lastMessageId && event.messageId !== lastMessageId) text += "\n\n";
+          if (event.messageId) lastMessageId = event.messageId;
           text += event.text;
           scheduleStream();
           break;

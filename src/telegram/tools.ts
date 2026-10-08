@@ -146,7 +146,8 @@ export function createTelegramToolFactory(deps: {
       async execute(_id, raw) {
         try {
           const a = args(raw),
-            emoji = str(a, "emoji", true)!;
+            // Telegram lists reactions without the variation selector that models usually add.
+            emoji = str(a, "emoji", true)!.replace(/\uFE0F/g, "");
           if (!ALLOWED_REACTIONS.has(emoji)) throw new Error("That reaction is not supported by Telegram.");
           const id = str(a, "message_id") ?? currentTurn()?.triggerMessageId;
           if (!id || !/^\d+$/.test(id)) throw new Error("A valid message_id is required.");
@@ -172,7 +173,8 @@ export function createTelegramToolFactory(deps: {
         try {
           const a = args(raw),
             text = str(a, "text", true)!;
-          await sendFormatted(deps.api, route(), text);
+          const sent = await sendFormatted(deps.api, route(), text);
+          if (!sent.length) throw new Error("Telegram did not accept the message.");
           return textResult("Message sent.");
         } catch (e) {
           return errResult(e);
@@ -227,9 +229,7 @@ export function createTelegramToolFactory(deps: {
       });
     const toolMode = replyModeFor(deps.config, initialRoute) === "tool";
     return tools.filter((t) =>
-      t.name === "telegram_send_message"
-        ? toolMode
-        : t.name === "telegram_send_file" || deps.config.ENABLE_TELEGRAM_TOOLS,
+      t.name === "telegram_send_message" ? toolMode : deps.config.ENABLE_TELEGRAM_TOOLS,
     );
   };
 }

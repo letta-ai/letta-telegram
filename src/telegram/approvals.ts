@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
-import type { ApprovalDecision, ApprovalRequest } from "../types.ts";
+import { routeKeyString, type ApprovalDecision, type ApprovalRequest, type RouteKey } from "../types.ts";
 import { escapeHtml } from "./format.ts";
 
 export interface ApprovalApi {
@@ -127,6 +127,15 @@ export class ApprovalManager {
       { state: allow ? "Approved" : "Denied", by: userId },
     );
     return true;
+  }
+  /** Settle a route's pending approvals once /cancel or /new has ended its turn. */
+  async cancelRoute(route: RouteKey, message = "Approval cancelled: the turn was stopped.") {
+    const key = routeKeyString(route);
+    await Promise.all(
+      [...this.pending.values()]
+        .filter((p) => routeKeyString(p.req.route) === key)
+        .map((p) => this.settle(p.id, { allow: false, message }, { state: "Cancelled" })),
+    );
   }
   async cancelAll(message = "Approval cancelled: the bot is shutting down.") {
     await Promise.all(
