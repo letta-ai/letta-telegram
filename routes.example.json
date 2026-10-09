@@ -1,0 +1,23 @@
+{
+  "policy": {
+    "approvalMode": "admins"
+  },
+  "routes": [
+    {
+      "chat": "-1001234567890",
+      "policy": {
+        "toolset": "none"
+      }
+    },
+    {
+      "chat": "-1001234567890",
+      "topic": "42",
+      "conversation": "default"
+    },
+    {
+      "user": "123456789",
+      "conversation": "conv-example"
+    }
+  ],
+  "fallback": "auto"
+}

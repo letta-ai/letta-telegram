@@ -1,0 +1,88 @@
+import { describe, expect, test } from "bun:test";
+import { loadConfig } from "../src/config.ts";
+import { parseCommand, runCommand } from "../src/telegram/commands.ts";
+import { ALLOWED_REACTIONS, createTelegramToolFactory } from "../src/telegram/tools.ts";
+import type { AgentBridge, RouteKey } from "../src/types.ts";
+const config = (extra: Record<string, string> = {}) =>
+  loadConfig({
+    TELEGRAM_BOT_TOKEN: "x",
+    LETTA_API_KEY: "y",
+    LETTA_AGENT_ID: "agent-1",
+    TELEGRAM_ADMIN_USER_IDS: "1",
+    ...extra,
+  });
+const route: RouteKey = { chatId: "-100", topicId: "7" };
+const bridge: AgentBridge = {
+  submit: async () => {},
+  cancel: async () => true,
+  reset: async () => "reset",
+  status: async (_r, admin) => ({
+    busy: false,
+    queued: 0,
+    hasConversation: true,
+    ...(admin ? { conversationId: "conv-secret", model: "m" } : {}),
+  }),
+  onBackground: () => {},
+  shutdown: async () => {},
+};
+describe("commands", () => {
+  test("parses addressed commands", () => {
+    expect(parseCommand("/status@MyBot", "mybot")).toBe("status");
+    expect(parseCommand("/status@other", "mybot")).toBeNull();
+  });
+  test("status only exposes ids to admins", async () => {
+    expect(await runCommand("status", route, "1", config(), bridge)).toContain("conv-secret");
+    expect(await runCommand("status", route, "2", config(), bridge)).not.toContain("conv-secret");
+  });
+  test("new and cancel invoke bridge", async () => {
+    expect(await runCommand("new", route, "2", config(), bridge)).toMatch(/new conversation/i);
+    expect(await runCommand("cancel", route, "2", config(), bridge)).toMatch(/Cancelled/);
+  });
+});
+describe("tools", () => {
+  test("reaction validates emoji and remains scoped", async () => {
+    const calls: any[] = [],
+      api: any = {
+        async setMessageReaction(...a: any[]) {
+          calls.push(a);
+        },
+        async sendMessage() {
+          return { message_id: 1 };
+        },
+        async editMessageText() {},
+        async sendChatAction() {},
+        async sendDocument() {},
+        async sendPhoto() {},
+      };
+    const tools = createTelegramToolFactory({ api, config: config(), makeInputFile: () => ({}) })(
+      route,
+      () => ({
+        route,
+        triggerMessageId: "9",
+        requesterId: "2",
+        onEvent: () => {},
+        requestApproval: async () => ({ allow: false }),
+      }),
+      null,
+    );
+    const react = tools.find((t) => t.name === "telegram_react")! as any;
+    expect(ALLOWED_REACTIONS.has("👌")).toBe(true);
+    expect((await react.execute("x", { description: "React", emoji: "not-an-emoji" })).isError).toBe(true);
+    await react.execute("x", { description: "React", emoji: "👌" });
+    expect(calls[0].slice(0, 2)).toEqual(["-100", 9]);
+  });
+  test("send_message only exists in tool-mode open chats", () => {
+    const api: any = {};
+    const c = config({
+      TELEGRAM_OPEN_CHAT_IDS: "-100",
+      OPEN_CHAT_REPLY_MODE: "tool",
+      ENABLE_TELEGRAM_TOOLS: "false",
+    });
+    const tools = createTelegramToolFactory({ api, config: c, makeInputFile: () => ({}) })(
+      route,
+      () => null,
+      null,
+    );
+    expect(tools.map((t) => t.name)).toEqual(["telegram_send_message"]);
+  });
+});

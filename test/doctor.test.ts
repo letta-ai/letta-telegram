@@ -1,0 +1,44 @@
+import { describe, expect, test } from "bun:test";
+import { checkTelegramToken, checkWebhook, runDoctor } from "../src/doctor.ts";
+const response = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+describe("Telegram doctor", () => {
+  test("validates token and open-chat privacy", async () => {
+    const fetch = async () =>
+      response({
+        ok: true,
+        result: {
+          id: 1,
+          is_bot: true,
+          username: "testbot",
+          can_join_groups: true,
+          can_read_all_group_messages: false,
+        },
+      });
+    const x = await checkTelegramToken(fetch as unknown as typeof globalThis.fetch, "secret", ["-100"]);
+    expect(x.checks.map((c) => c.status)).toContain("FAIL");
+    expect(JSON.stringify(x.checks)).not.toContain("secret");
+  });
+  test("warns about old webhook", async () => {
+    const fetch = async () => response({ ok: true, result: { url: "https://old.example" } });
+    expect((await checkWebhook(fetch as unknown as typeof globalThis.fetch, "secret")).status).toBe("WARN");
+  });
+  test("redacts credentials from all output", async () => {
+    const secret = "bot:SECRET";
+    const checks = await runDoctor({
+      env: {
+        TELEGRAM_BOT_TOKEN: secret,
+        LETTA_API_KEY: "KEY",
+        LETTA_AGENT_ID: "agent-1",
+        DATA_DIR: ":memory:",
+      },
+      fetch: (async (url) => {
+        if (String(url).includes("getMe")) return response({ ok: false, description: secret }, 401);
+        if (String(url).includes("getWebhookInfo")) return response({ ok: true, result: { url: "" } });
+        return response({}, 401);
+      }) as typeof globalThis.fetch,
+    });
+    expect(JSON.stringify(checks)).not.toContain(secret);
+    expect(JSON.stringify(checks)).not.toContain("KEY");
+  });
+});

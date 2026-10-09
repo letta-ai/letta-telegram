@@ -1,0 +1,38 @@
+# Copy to fly.toml, choose a unique app, and see docs/deploying.md.
+app = "letta-telegram"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DATA_DIR = "/app/data"
+  HEALTH_PORT = "8080"
+  LOG_LEVEL = "info"
+
+# Keep one Machine. Two long pollers for one token receive 409 Conflict.
+[deploy]
+  strategy = "rolling"
+
+[[mounts]]
+  source = "telegram_data"
+  destination = "/app/data"
+
+[checks]
+  [checks.healthz]
+    type = "http"
+    port = 8080
+    method = "get"
+    path = "/healthz"
+    grace_period = "30s"
+    interval = "30s"
+    timeout = "5s"
+
+[[restart]]
+  policy = "always"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

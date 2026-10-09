@@ -1,0 +1,23 @@
+{
+  "name": "letta-telegram",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
+    "@letta-ai/letta-agent-sdk": "^0.8.30",
+    "grammy": "^1.42.0",
+    "zod": "^4.6.5"
+  },
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "doctor": "bun run src/doctor.ts",
+    "dev": "bun --watch run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p ."
+  }
+}
